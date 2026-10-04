@@ -12,10 +12,12 @@
 | 分支 | `feature/cyber-lanlan` |
 | 基线 | `99058004449a76c313375e238436b4642e36886c`（`feature/korean-learning`） |
 | 保留分支 | `feature/korean-learning` 未被改动；本分支仅在自己的目录树中移除韩语应用 |
-| 固件 | 合并镜像 `build/FoloToy-AI-Passport-full.bin`，应用镜像以及匹配的 ELF/MAP 保留在 `build/firmware/<sha256>/` 下的内容寻址归档中 |
+| 固件 | 合并镜像 `build/FoloToy-AI-Passport-full.bin`，1822368 字节，SHA-256 `b599f0e6ff6a5f9cd1a7d198548c8f2df939bad161e56ceeac13182a4f4c6f00`；应用镜像 1756832 字节，位于 8323072 字节的 factory 分区内，其对应的 ELF、MAP、bootloader、分区表和 `flash_args` 保留在按内容寻址的归档 `build/firmware/b599f0e6ff6a5f9cd1a7d198548c8f2df939bad161e56ceeac13182a4f4c6f00/` 中 |
 | 服务 | `services/lanlan/`，仅使用 CPython 标准库，SQLite 存储 |
 | 移动网页 | `web/lanlan/`，无构建步骤，无第三方资源 |
 | 部署 | `deploy/`（`docker-compose.yml`、`Caddyfile`、环境变量示例） |
+
+交付时已验证：`./tools/validate.sh` 完整通过（仓库检查、169 个服务测试、固件主机测试、ESP-IDF 构建、合并镜像布局检查与调试归档），且 `python3 tools/archive_firmware.py verify build/firmware/b599f0e6ff6a5f9c…` 确认归档有效。代码提交为 `de1d658`；本交付记录提交在其之上，因此分支的最新提交就是添加本文件的提交。
 
 阶段覆盖：M0 设计文档，M1 服务与移动网页，M2 使用有界缓存的护照同步，M3 伙伴互动、声音和由所有者配置的提醒（默认全部禁用），M4 构建、产物和本交付记录。
 

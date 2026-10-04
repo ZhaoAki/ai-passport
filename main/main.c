@@ -566,6 +566,32 @@ static void audio_idle(void) {
 
 /* -------------------------------------------------------------- render -- */
 
+/* Scheme and authority of the configured service URL. Any path, query string,
+ * fragment or userinfo is dropped, so the status page can show where the device
+ * talks to without ever exposing a credential or a request parameter. The device
+ * token lives in the credential blob, not in the URL, so it cannot appear here. */
+static void service_host_text(const char *base_url, char *out, size_t out_size) {
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!base_url) return;
+    const char *authority = NULL;
+    if (strncmp(base_url, "https://", 8) == 0) {
+        authority = base_url + 8;
+    } else if (strncmp(base_url, "http://", 7) == 0) {
+        authority = base_url + 7;
+    } else {
+        return;
+    }
+    size_t length = (size_t)(authority - base_url);
+    for (const char *cursor = authority; *cursor != '\0'; ++cursor) {
+        if (*cursor == '/' || *cursor == '?' || *cursor == '#') break;
+        ++length;
+    }
+    if (length >= out_size) length = out_size - 1;
+    memcpy(out, base_url, length);
+    out[length] = '\0';
+}
+
 static const char *sync_state_text(lanlan_sync_state_t state) {
     switch (state) {
     case LANLAN_SYNC_STATE_OK: return LANLAN_STR_STATUS_OK;
@@ -600,6 +626,8 @@ static void render(void) {
     lanlan_sync_state_t sync_state = lanlan_sync_state();
     char status_text[64];
     lanlan_view_sync_status_text(s_view, status_text, sizeof(status_text));
+    char service_host[80];
+    service_host_text(s_config.base_url, service_host, sizeof(service_host));
     lanlan_local_now_t local;
     int64_t epoch = 0;
     local_now(&local, &epoch);
@@ -614,6 +642,7 @@ static void render(void) {
     state.cache_rebuilt = s_cache_rebuilt;
     state.storage_limited = s_storage_limited;
     state.secure_url = !lanlan_url_is_insecure(s_config.base_url);
+    state.service_host = service_host;
     state.banner_text = (now_us() < s_banner_until_us) ? LANLAN_STR_REMINDERS_DUE : NULL;
     lanlan_ui_render(s_screen, &state);
     bsp_lvgl_unlock();

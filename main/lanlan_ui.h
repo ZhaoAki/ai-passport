@@ -43,6 +43,10 @@ typedef struct {
     bool cache_rebuilt;       /* show the "cache rebuilt" notice on home */
     bool storage_limited;     /* NVS could not store the whole cache */
     bool secure_url;          /* false: plain-HTTP LAN development URL */
+    /* Scheme and host of the configured service URL, or NULL/"" when unknown.
+     * The application passes only the scheme and authority: never a path, a
+     * query string, the device token or any other credential. */
+    const char *service_host;
     /* Non-NULL while a reminder is due: the bottom line shows this instead of
      * the key hint, so the due state stays visible without overlapping any
      * page content and regardless of the sound settings. */

@@ -132,6 +132,16 @@ static lv_obj_t *ui_wrapped(lv_obj_t *parent, int x, int y, int width, int heigh
     return label;
 }
 
+/* Height a wrapped label will occupy inside `width`, taken from LVGL's own text
+ * metrics so the status card can be sized to its content instead of to a guess. */
+static int ui_wrapped_height(const char *text, int width) {
+    if (!text || text[0] == '\0') return 0;
+    lv_point_t size;
+    memset(&size, 0, sizeof(size));
+    lv_text_get_size(&size, text, &lanlan_font_16, 0, 0, (int32_t)width, LV_TEXT_FLAG_NONE);
+    return (int)size.y;
+}
+
 static void ui_dot(lv_obj_t *parent, int x, int y, uint32_t color) {
     lv_obj_t *dot = ui_panel(parent, x, y, 10, 10, color, LV_RADIUS_CIRCLE);
     if (dot) lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE);
@@ -631,31 +641,20 @@ static void render_reminders(lv_obj_t *screen, const lanlan_ui_state_t *state) {
 /* ----------------------------------------------------------- status page -- */
 
 static void render_status(lv_obj_t *screen, const lanlan_ui_state_t *state) {
-    lv_obj_t *card = ui_panel(screen, 12, UI_BODY_TOP, 216, 150, UI_COLOR_CARD, UI_CARD_CORNER);
-    if (!card) return;
-    ui_dot(card, 14, 18, state->status_color);
-    /* Wide enough for the longest state line the application can pass (the
-     * credential-rejected instruction), so it is not cut with DOTS. */
-    ui_text(card, 32, 12, 180, 22, state->status_text ? state->status_text : "", &lanlan_font_16,
-            UI_COLOR_INK, LV_TEXT_ALIGN_LEFT);
-    if (state->cache_rebuilt) {
-        ui_wrapped(card, 14, 46, 188, 40, LANLAN_STR_STATUS_CACHE_REBUILT, &lanlan_font_16,
-                   UI_COLOR_WARN);
-    } else if (state->storage_limited) {
-        ui_wrapped(card, 14, 46, 188, 40, LANLAN_STR_ERRORS_STORAGE, &lanlan_font_16,
-                   UI_COLOR_WARN);
-    }
-    if (state->status_detail) {
-        ui_wrapped(card, 14, 92, 188, 44, state->status_detail, &lanlan_font_16, UI_COLOR_MUTED);
-    }
-    /* The retry instruction belongs to the bottom hint line only, which this page
-     * already shows, so it is deliberately not repeated here. */
-
-    /* The model's sync detail is one long sentence that wraps into the hint band,
-     * so it is composed here as two single-line labels instead. Both are bounded
-     * (DOTS), 20 px tall and end at y=282, well above the hint bar at y=292. */
-    char text[96];
     const lanlan_records_view_t *view = state->view;
+    const char *notice = state->cache_rebuilt      ? LANLAN_STR_STATUS_CACHE_REBUILT
+                         : state->storage_limited  ? LANLAN_STR_ERRORS_STORAGE
+                                                   : NULL;
+    const char *detail = state->status_detail;
+    const char *host = (state->service_host && state->service_host[0] != '\0')
+                           ? state->service_host
+                           : NULL;
+    const bool insecure = !state->secure_url;
+
+    /* Two bounded, single-line facts. The service cursor is deliberately absent:
+     * it is an internal number, so it stays in the `lanlan status` console output
+     * rather than in the owner-facing text. */
+    char sync_line[96];
     if (view && view->last_sync_epoch > 0) {
         lanlan_date_t date;
         int hour = 0;
@@ -664,26 +663,71 @@ static void render_status(lv_obj_t *screen, const lanlan_ui_state_t *state) {
                 == LANLAN_TIME_OK
             && lanlan_time_local_hhmm(view->last_sync_epoch, view->utc_offset_min, &hour,
                                       &minute) == LANLAN_TIME_OK) {
-            snprintf(text, sizeof(text), "%s %d%s%d%s %02d:%02d", LANLAN_STR_SYNC_DETAIL,
-                     (int)date.month, LANLAN_STR_QUANTITY_DATE_MONTH_UNIT, (int)date.day_in_month,
+            snprintf(sync_line, sizeof(sync_line), "%s %d%s%d%s %02d:%02d",
+                     LANLAN_STR_SYNC_DETAIL, (int)date.month,
+                     LANLAN_STR_QUANTITY_DATE_MONTH_UNIT, (int)date.day_in_month,
                      LANLAN_STR_QUANTITY_DATE_DAY_UNIT, hour, minute);
         } else {
-            snprintf(text, sizeof(text), "%s %s", LANLAN_STR_SYNC_DETAIL, LANLAN_STR_SYNC_NEVER);
+            snprintf(sync_line, sizeof(sync_line), "%s %s", LANLAN_STR_SYNC_DETAIL,
+                     LANLAN_STR_SYNC_NEVER);
         }
     } else {
-        snprintf(text, sizeof(text), "%s %s", LANLAN_STR_SYNC_DETAIL, LANLAN_STR_SYNC_NEVER);
+        snprintf(sync_line, sizeof(sync_line), "%s %s", LANLAN_STR_SYNC_DETAIL,
+                 LANLAN_STR_SYNC_NEVER);
     }
-    ui_text(screen, 12, 238, 216, 20, text, &lanlan_font_16, UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
+    char cache_line[64];
+    snprintf(cache_line, sizeof(cache_line), "%s %u %s", LANLAN_STR_SYNC_CACHE_COUNT,
+             (unsigned)(view ? view->cache.record_count : 0u), LANLAN_STR_SYNC_RECORDS_UNIT);
 
-    snprintf(text, sizeof(text), "%s %u %s · %s %u", LANLAN_STR_SYNC_CACHE_COUNT,
-             (unsigned)(view ? view->cache.record_count : 0u), LANLAN_STR_SYNC_RECORDS_UNIT,
-             LANLAN_STR_SYNC_CURSOR, (unsigned)(view ? view->cursor : 0u));
-    ui_text(screen, 12, 262, 216, 20, text, &lanlan_font_16, UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
+    /* Size the card to exactly the rows that will be drawn, so it never shows a
+     * large empty body. Wrapped rows are measured with the font metrics. */
+    const int notice_height = notice ? ui_wrapped_height(notice, 188) : 0;
+    const int detail_height = detail ? ui_wrapped_height(detail, 188) : 0;
+    int height = 8 + 24;
+    if (notice) height += 6 + notice_height;
+    if (detail) height += 6 + detail_height;
+    height += 8 + (20 + 4) + (20 + 4);
+    if (host) height += 20 + 4;
+    if (insecure) height += 20 + 4;
+    height += 8;
+    const int max_height = UI_BODY_BOTTOM - UI_BODY_TOP;
+    if (height > max_height) height = max_height;
 
-    if (!state->secure_url) {
-        ui_text(screen, 12, 212, 216, 20, "http:// (LAN dev)", &lanlan_font_16, UI_COLOR_WARN,
+    lv_obj_t *card = ui_panel(screen, 12, UI_BODY_TOP, 216, height, UI_COLOR_CARD,
+                              UI_CARD_CORNER);
+    if (!card) return;
+    int y = 8;
+    ui_dot(card, 14, y + 3, state->status_color);
+    /* Wide enough for the longest state line the application can pass (the
+     * credential-rejected instruction), so it is not cut with DOTS. */
+    ui_text(card, 32, y, 180, 22, state->status_text ? state->status_text : "", &lanlan_font_16,
+            UI_COLOR_INK, LV_TEXT_ALIGN_LEFT);
+    y += 24;
+    if (notice) {
+        y += 6;
+        ui_wrapped(card, 14, y, 188, notice_height, notice, &lanlan_font_16, UI_COLOR_WARN);
+        y += notice_height;
+    }
+    if (detail) {
+        y += 6;
+        ui_wrapped(card, 14, y, 188, detail_height, detail, &lanlan_font_16, UI_COLOR_MUTED);
+        y += detail_height;
+    }
+    y += 8;
+    ui_text(card, 12, y, 204, 20, sync_line, &lanlan_font_16, UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
+    y += 24;
+    ui_text(card, 12, y, 204, 20, cache_line, &lanlan_font_16, UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
+    y += 24;
+    if (host) {
+        ui_text(card, 12, y, 204, 20, host, &lanlan_font_16, UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
+        y += 24;
+    }
+    if (insecure) {
+        ui_text(card, 12, y, 204, 20, "http:// (LAN dev)", &lanlan_font_16, UI_COLOR_WARN,
                 LV_TEXT_ALIGN_LEFT);
     }
+    /* The retry instruction belongs to the bottom hint line only, which this page
+     * already shows, so it is deliberately not repeated here. */
 }
 
 /* ----------------------------------------------------------- entry points -- */

@@ -16,10 +16,12 @@ still open. The frozen design is in [cyber-lanlan.md](cyber-lanlan.md) and
 | Branch | `feature/cyber-lanlan` |
 | Baseline | `99058004449a76c313375e238436b4642e36886c` (`feature/korean-learning`) |
 | Preserved branch | `feature/korean-learning` is untouched; this branch retires the Korean application from its own tree only |
-| Firmware | merged image `build/FoloToy-AI-Passport-full.bin`, application image and matching ELF/MAP retained in the content-addressed bundle under `build/firmware/<sha256>/` |
+| Firmware | merged image `build/FoloToy-AI-Passport-full.bin`, 1822368 bytes, SHA-256 `b599f0e6ff6a5f9cd1a7d198548c8f2df939bad161e56ceeac13182a4f4c6f00`; application image 1756832 bytes inside the 8323072-byte factory partition, with its matching ELF, MAP, bootloader, partition table and `flash_args` retained in the content-addressed bundle `build/firmware/b599f0e6ff6a5f9cd1a7d198548c8f2df939bad161e56ceeac13182a4f4c6f00/` |
 | Service | `services/lanlan/`, CPython standard library only, SQLite storage |
 | Mobile web | `web/lanlan/`, no build step, no third-party assets |
 | Deployment | `deploy/` (`docker-compose.yml`, `Caddyfile`, environment example) |
+
+Verified at delivery: `./tools/validate.sh` passes completely (repository checks, 169 service tests, the firmware host tests, the ESP-IDF build, the merged-image layout check and the debug archive) and `python3 tools/archive_firmware.py verify build/firmware/b599f0e6ff6a5f9c…` confirms the bundle. The code commit is `de1d658`; this handover record is committed on top of it, so the branch head is the commit that adds this file.
 
 Stage coverage: M0 design documents, M1 service and mobile web, M2 passport sync with a
 bounded cache, M3 companion interaction, sounds and owner-configured reminders (all
