@@ -118,11 +118,15 @@ idempotency(family_id TEXT NOT NULL, client_request_id TEXT NOT NULL, record_id 
 ```
 
 `records` and `reminders` are append-only revision logs: every accepted change inserts a new
-row with `version + 1` and the same `id`, and `seq` (the row id) is the global change order.
-The current state of a record is its highest-version row. There is no `UPDATE` and no
-`DELETE` on either table, which is what makes the incremental cursor, the audit trail and
-the tombstone rule consistent with each other. Statistics and lists read only rows where
-`status` is `active` and the version is current.
+row with `version + 1` and the same `id`. `seq` is a **globally unique, monotonically
+increasing change number** drawn from one sequence shared by both tables and allocated in
+the same transaction as the revision insert (the service keeps a dedicated allocator table
+for it). A single cursor over both tables therefore can never skip a change, which two
+independent per-table row-id sequences would not guarantee. The current state of a record is
+its highest-version row. There is no `UPDATE` and no `DELETE` on either table, which is what
+makes the incremental cursor, the audit trail and the tombstone rule consistent with each
+other. Statistics and lists read only rows where `status` is `active` and the version is
+current.
 
 ### 4.2 Field semantics
 
@@ -200,6 +204,18 @@ the session cookie plus the CSRF header on writes; device endpoints require
 | `GET` | `/sync/changes` | device | Incremental changes after a cursor |
 | `GET` | `/sync/snapshot` | device | Paged full resynchronization |
 | `POST` | `/sync/ack` | device | Report the applied cursor and the device clock for diagnostics |
+| `GET`, `PATCH` | `/profile` | session | Pet profile fields shown on the profile page |
+| `POST` | `/auth/change-password` | session | Change the signed-in caregiver's password |
+| `GET` | `/status` | session | Service status shown on the account page |
+
+Both sync responses also carry `members`, the family's caregivers as
+`[{"id", "display_name", "username"}]`, so the passport can label the creator and the
+performer without holding family-management privileges.
+
+The implementation additionally keeps a `login_attempts` table for login throttling, a
+`pet_profile` row for the profile page, and the `change_seq` allocator that provides the
+global change sequence described in section 4.1. Those are service-internal; the record and
+reminder tables above are created exactly as written.
 
 `GET /` and `/assets/*` serve the mobile web page from `web/lanlan/`. Those files contain no
 family data; record data is only reachable through the authenticated JSON API.
@@ -278,7 +294,7 @@ device replaces the cache only after the final page is stored.
 
 | Item | Decision |
 | --- | --- |
-| Device cache size | 40 newest records plus up to 32 revocation tombstones plus 16 reminders, stored as a compact binary blob under NVS namespace `lanlan`, roughly 5 KB |
+| Device cache size | 40 newest records plus up to 32 revocation tombstones plus 16 reminders, stored as one canonical CRC32-protected binary blob under NVS namespace `lanlan`: one entry is at most 160 bytes, the blob at most 8 KB, and the live cache plus its staging buffer at most 16 KB of static RAM. The device keeps only a 48-byte UTF-8 preview of a note; the full note stays on the service |
 | NVS partition | Unchanged: the tracked `partitions.csv` keeps 24 KB NVS. We do not repartition unless a measured need appears, and any such change must state its effect on application capacity and upgrade data |
 | Cache eviction | Oldest records are dropped from the device cache only; the service history is never deleted by eviction |
 | Damaged cache | The device discards and rebuilds an unreadable cache from the service and keeps a visible unsaved/unsynced warning; server data is never touched |

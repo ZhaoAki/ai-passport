@@ -19,21 +19,21 @@ Unverified: remaining board, instrument, or user checks
 
 | ID | 检查项 | 本仓库中的证据 | 当前状态 |
 | --- | --- | --- | --- |
-| A01 | 手机页面能记录第一代的每个项目，两位照顾者都能使用 | `tests/test_web_flow.py` 通过 HTTP API 驱动每个类别和单位的记录表单；在浏览器中以 390x844 检查移动端布局 | 自动化部分运行；手机视觉检查待做 |
-| A02 | 创建者、执行者和修订可区分；未知数量绝不会变成零 | `tests/test_records_api.py`（创建者与执行者、修订链、`amount_value` 保持 `NULL`），`tests/test_lanlan_record.c` 覆盖设备渲染路径 | 自动化 |
-| A03 | 冲突可见、重试不重复、撤销不重现 | `tests/test_concurrency.py`（带当前版本的 409、`client_request_id` 重放、撤销后的删除标记下发）加上 `tests/test_lanlan_cache.c` 覆盖删除标记处理 | 自动化 |
-| A04 | 未认证身份和其他家庭的身份无法读取记录；设备凭据权限受限 | `tests/test_authz.py`（匿名请求返回 401，其他家庭返回 403/404，设备令牌在每个写入端点和账户端点上都被拒绝） | 自动化 |
-| A05 | 已保存数据在重启后仍然存在；写入失败时保留照顾者的输入 | `tests/test_persistence.py` 针对同一数据库文件重启服务进程；网页测试断言表单保留其值，且重试复用同一请求 id | 自动化 |
-| A06 | 同步达到约定延迟；离线时显示缓存和数据年龄 | `tests/test_sync_protocol.py` 覆盖游标顺序和批次一致性；延迟和离线行为需要硬件 | 协议自动化；上机检查待做 |
-| A07 | 损坏的缓存可以重建，分页有界，服务器记录不受影响 | `tests/test_lanlan_cache.c`（损坏的数据块、超大批次、淘汰、失败时游标不前进） | 自动化 |
-| A08 | 伙伴互动不创建真实记录，且不残留任何韩语入口 | `tests/test_lanlan_model.c`（互动永不发出记录操作）；仓库检查确认韩语应用源码、工具、测试和资源已从本分支移除 | 自动化 |
-| A09 | 中文和动态文本遵循约定策略，关键字段不被截断 | `tests/test_lanlan_fonts.py`（字形清单与固定字符串匹配，必需字形不使用占位符）、`tests/lanlan_ui/` 主机预览以 240x320 渲染固定屏幕 | 清单自动化；真实屏幕渲染待做 |
-| A10 | 提醒初始为禁用、可由所有者配置，并且在刷新、重启或时钟变化时绝不响两次 | `tests/test_lanlan_reminder.c` 使用注入时钟和已持久化的已触发实例；`tests/test_reminders_api.py` 覆盖默认为禁用的状态以及启用/禁用规则 | 自动化 |
-| A11 | 三按键的短按和长按、静音和熄屏唤醒行为一致，且不会误提交 | `tests/test_lanlan_model.c` 的按键序列，包括先唤醒后释放，加上已有的 BSP 按键测试 | 逻辑自动化；真实按键手感待做 |
-| A12 | 网络、音频和动画同时运行且无泄漏 | 仅主机侧生命周期测试；上机时用堆和最大块日志进行页面切换和事件循环 | 设备测量待做 |
-| A13 | 导出与生效记录一致、备份可恢复、历史不被静默覆盖 | `tests/test_export_backup.py`（CSV 和 JSON 与数据库比对、备份加恢复往返、修订历史保留） | 自动化 |
-| A14 | 完整构建通过，且固件、ELF、MAP 和分区文件对应同一个提交 | `./tools/validate.sh` 和 `python3 tools/archive_firmware.py verify <bundle>` | 固件门禁在 M4 运行 |
-| A15 | 源码中没有凭据、家庭记录或未经授权的照片；资源来源有记录 | `tools/check_repo.py` 密钥扫描，加上对 `assets/README.md` 和提交内容的人工审查 | 自动化扫描加人工审查 |
+| A01 | 手机页面能记录第一代的每个项目，两位照顾者都能使用 | `services/lanlan/tests/test_records_api.py` 与 `test_web_assets.py` 通过真实 HTTP 覆盖每个类别、单位和网页视图；移动端布局仍需在浏览器中以 390x844 检查 | API 自动化；手机视觉检查待做 |
+| A02 | 创建者、执行者和修订可区分；未知数量绝不会变成零 | `services/lanlan/tests/test_records_api.py`（创建者与执行者、修订链、`amount_value` 保持 `NULL`），`tests/test_lanlan_record.c` 与 `tests/test_lanlan_caregiver.c` 覆盖设备渲染路径 | 自动化 |
+| A03 | 冲突可见、重试不重复、撤销不重现 | `services/lanlan/tests/test_concurrency.py` 与 `test_change_sequence.py`（带当前版本的 409、`client_request_id` 重放、删除标记随游标下发）加上 `tests/test_lanlan_cache.c` 覆盖删除标记处理 | 自动化 |
+| A04 | 未认证身份和其他家庭的身份无法读取记录；设备凭据权限受限 | `services/lanlan/tests/test_authz.py` 与 `test_config_auth_security.py`（匿名 401、其他家庭 403/404、设备令牌在所有写入与账户端点上被拒绝、CSRF 与来源校验） | 自动化 |
+| A05 | 已保存数据在重启后仍然存在；写入失败时保留照顾者的输入 | `services/lanlan/tests/test_persistence.py` 针对同一数据库文件重启服务；`test_web_assets.py` 断言表单保留输入并在重试时复用同一请求 id | 自动化 |
+| A06 | 同步达到约定延迟；离线时显示缓存和数据年龄 | `services/lanlan/tests/test_sync_protocol.py` 与 `test_change_sequence.py` 覆盖游标顺序、分页完整性和批次一致性；60 秒目标与离线行为需要硬件 | 协议自动化；上机检查待做 |
+| A07 | 损坏的缓存可以重建，分页有界，服务器记录不受影响 | `tests/test_lanlan_cache.c`（损坏、被截断和版本不匹配的数据块、暂存提交失败、淘汰、失败时游标不前进） | 自动化 |
+| A08 | 伙伴互动不创建真实记录，且不残留任何韩语入口 | `tests/test_lanlan_model.c`（互动永不发出记录操作）；本分支已移除韩语应用源码、测试、工具与资源，`main/CMakeLists.txt` 不再链接任何韩语资源 | 自动化 |
+| A09 | 中文和动态文本遵循约定策略，关键字段不被截断 | `tests/test_lanlan_assets.py`（字形清单与固定字符串匹配）与 `tests/lanlan_ui/` 主机渲染环节，后者用真实的 `lanlan_ui.c` 渲染每个 240x320 屏幕并审计字形覆盖 | 主机渲染自动化；真实屏幕渲染待做 |
+| A10 | 提醒初始为禁用、可由所有者配置，并且在刷新、重启或时钟变化时绝不响两次 | `tests/test_lanlan_reminder.c` 使用注入时钟和已持久化的已触发实例；`services/lanlan/tests/test_reminders_api.py` 覆盖默认为禁用以及启用/禁用规则 | 自动化 |
+| A11 | 三按键的短按和长按、静音和熄屏唤醒行为一致，且不会误提交 | `tests/test_lanlan_model.c` 的按键序列（包括先唤醒后释放），加上已有的 BSP 按键测试 | 逻辑自动化；真实按键手感待做 |
+| A12 | 网络、音频和动画同时运行且无泄漏 | 仅主机侧生命周期测试；上机时用堆和最大块日志进行页面切换和事件循环，应用在启动时和每次同步后都会打印这些日志 | 设备测量待做 |
+| A13 | 导出与生效记录一致、备份可恢复、历史不被静默覆盖 | `services/lanlan/tests/test_export_backup.py`（CSV 和 JSON 与数据库比对、备份加恢复往返、修订历史保留） | 自动化 |
+| A14 | 完整构建通过，且固件、ELF、MAP 和分区文件对应同一个提交 | `./tools/validate.sh` 加上对内容寻址归档执行 `python3 tools/archive_firmware.py verify <bundle>` | 固件门禁已通过；M4 复跑 |
+| A15 | 源码中没有凭据、家庭记录或未经授权的照片；资源来源有记录 | `tools/check_repo.py` 密钥扫描、`.gitignore` 对数据库和部署密钥的规则，以及对 `assets/README.md` 和提交内容的人工审查 | 自动化扫描加人工审查 |
 
 ## 2. 如何运行检查
 

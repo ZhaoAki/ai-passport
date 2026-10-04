@@ -88,7 +88,7 @@ idempotency(family_id TEXT NOT NULL, client_request_id TEXT NOT NULL, record_id 
         created_at TEXT NOT NULL, PRIMARY KEY(family_id, client_request_id))
 ```
 
-`records` 和 `reminders` 是只追加的修订日志：每次被接受的变更都会插入一行新数据，`version + 1` 且 `id` 相同，而 `seq`（行 id）是全局变更顺序。记录的当前状态是其版本号最高的行。这两张表上都没有 `UPDATE`，也没有 `DELETE`，这正是增量游标、审计追踪和删除标记规则彼此一致的原因。统计和列表只读取 `status` 为 `active` 且版本为当前版本的行。
+`records` 和 `reminders` 是只追加的修订日志：每次被接受的变更都会插入一行新数据，`version + 1` 且 `id` 相同。`seq` 是**全局唯一且单调递增的变更序号**，由两张表共用的同一个序列分配，并与修订行的插入在同一个事务中完成（服务为此保留一张专用的分配表）。因此对两张表使用同一个游标绝不会跳过任何变更，而两张表各自独立的行 id 序列无法保证这一点。记录的当前状态是其版本号最高的行。这两张表上都没有 `UPDATE`，也没有 `DELETE`，这正是增量游标、审计追踪和删除标记规则彼此一致的原因。统计和列表只读取 `status` 为 `active` 且版本为当前版本的行。
 
 ### 4.2 字段语义
 
@@ -154,6 +154,14 @@ idempotency(family_id TEXT NOT NULL, client_request_id TEXT NOT NULL, record_id 
 | `GET` | `/sync/changes` | 设备 | 游标之后的增量变更 |
 | `GET` | `/sync/snapshot` | 设备 | 分页的全量重新同步 |
 | `POST` | `/sync/ack` | 设备 | 上报已应用的游标和设备时钟用于诊断 |
+| `GET`、`PATCH` | `/profile` | 会话 | 档案页展示的懒懒资料字段 |
+| `POST` | `/auth/change-password` | 会话 | 修改当前登录照顾者的密码 |
+| `GET` | `/status` | 会话 | 账户页展示的服务状态 |
+
+两个同步响应还会带上 `members`，即该家庭的照顾者列表
+`[{"id", "display_name", "username"}]`，使护照能够标注创建者和执行者，而无需持有家庭管理权限。
+
+实现另外保留了一张用于登录限流的 `login_attempts` 表、一条用于档案页的 `pet_profile` 记录，以及提供第 4.1 节所述全局变更序号的 `change_seq` 分配表。这些都属于服务内部实现；上文的记录表和提醒表完全按定义创建。
 
 `GET /` 和 `/assets/*` 从 `web/lanlan/` 提供移动网页。这些文件不包含家庭数据；记录数据只能通过已认证的 JSON API 获取。
 
@@ -212,7 +220,7 @@ Authorization: Bearer <device token>
 
 | 项目 | 决策 |
 | --- | --- |
-| 设备缓存大小 | 40 条最新记录，加上最多 32 个撤销删除标记，加上 16 条提醒，以紧凑二进制块形式存储在 NVS 命名空间 `lanlan` 下，约 5 KB |
+| 设备缓存大小 | 40 条最新记录，加上最多 32 个撤销删除标记，加上 16 条提醒，以唯一的、带 CRC32 校验的二进制块形式存储在 NVS 命名空间 `lanlan` 下：单个条目不超过 160 字节，blob 不超过 8 KB，运行期缓存加暂存缓冲区不超过 16 KB 静态 RAM。设备只保留备注的 48 字节 UTF-8 前缀，完整备注保留在服务端 |
 | NVS 分区 | 不变：已跟踪的 `partitions.csv` 保留 24 KB NVS。除非出现经过测量的需要，否则不重新分区，任何此类变更都必须说明其对应用容量和升级数据的影响 |
 | 缓存淘汰 | 最旧的记录只从设备缓存中丢弃；服务历史永远不会因淘汰而被删除 |
 | 缓存损坏 | 设备丢弃无法读取的缓存并从服务重建，同时保留可见的未保存/未同步警告；服务器数据绝不被触碰 |

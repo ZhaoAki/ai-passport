@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#7c5cff">
+<title>澜澜记录</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<noscript><p class="noscript">此页面需要启用 JavaScript 才能使用。</p></noscript>
+
+<header class="topbar">
+  <span class="brand">澜澜记录</span>
+  <span id="net-status" class="net" data-state="unknown">检查中…</span>
+</header>
+
+<main id="app">
+
+  <section id="view-login" class="view" hidden>
+    <h1>登录</h1>
+    <p class="muted">用家庭看护人账号登录。登录前不会加载任何记录。</p>
+    <form id="login-form" class="card" autocomplete="on">
+      <label for="login-username">用户名</label>
+      <input id="login-username" name="username" type="text" autocapitalize="none" autocomplete="username" required>
+      <label for="login-password">密码</label>
+      <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+      <p id="login-error" class="error" hidden></p>
+      <button id="login-submit" class="primary" type="submit">登录</button>
+    </form>
+  </section>
+
+  <section id="view-overview" class="view" hidden>
+    <h1 id="overview-title">今天</h1>
+    <p id="overview-server-time" class="muted"></p>
+    <div id="summary-counts" class="counts"></div>
+    <div class="card">
+      <h2>最近一笔</h2>
+      <ul id="summary-latest" class="plain"></ul>
+    </div>
+    <div class="card">
+      <h2>设备同步</h2>
+      <p id="device-sync" class="muted"></p>
+    </div>
+    <button id="overview-record" class="primary big" type="button">记录一笔</button>
+  </section>
+
+  <section id="view-record" class="view" hidden>
+    <h1 id="record-title">记录</h1>
+    <form id="record-form" class="card">
+      <label for="record-category">类别</label>
+      <select id="record-category" name="category"></select>
+
+      <div id="subitem-field" hidden>
+        <label for="record-subitem">子项</label>
+        <select id="record-subitem" name="subitem"></select>
+      </div>
+
+      <div id="custom-name-field" hidden>
+        <label for="record-custom-name">名称（1-12 字）</label>
+        <input id="record-custom-name" name="custom_name" type="text" maxlength="12">
+      </div>
+
+      <label for="record-time">发生时间</label>
+      <input id="record-time" name="occurred_at" type="datetime-local" step="60">
+      <label class="check">
+        <input id="record-estimated" type="checkbox">
+        <span>时间是大约估的（标记为 estimated）</span>
+      </label>
+
+      <label for="record-performer">执行人</label>
+      <select id="record-performer" name="performed_by"></select>
+
+      <div id="amount-field" hidden>
+        <label for="record-amount">数量（可留空表示未知）</label>
+        <div class="row">
+          <input id="record-amount" name="amount_value" type="number" inputmode="decimal" step="any" min="0.001" placeholder="未知">
+          <select id="record-unit" name="amount_unit"></select>
+        </div>
+      </div>
+
+      <div id="duration-field" hidden>
+        <label for="record-duration">时长（分钟，可留空）</label>
+        <input id="record-duration" name="duration_minutes" type="number" inputmode="numeric" min="1" max="1440" step="1">
+      </div>
+
+      <label for="record-note">备注（可留空，最多 200 字）</label>
+      <textarea id="record-note" name="note" rows="3" maxlength="200"></textarea>
+
+      <p id="record-feedback" class="error" hidden></p>
+      <button id="record-submit" class="primary big" type="submit">保存到服务器</button>
+      <button id="record-retry" class="secondary" type="button" hidden>用同样的编号重试</button>
+    </form>
+    <p id="record-conflict" class="conflict" hidden></p>
+  </section>
+
+  <section id="view-records" class="view" hidden>
+    <h1>记录列表</h1>
+    <div class="card filters">
+      <label for="filter-from">起始日期</label>
+      <input id="filter-from" type="date">
+      <label for="filter-to">结束日期</label>
+      <input id="filter-to" type="date">
+      <label for="filter-category">类别</label>
+      <select id="filter-category"></select>
+      <button id="filter-apply" class="secondary" type="button">筛选</button>
+    </div>
+    <ul id="record-list" class="list"></ul>
+    <button id="record-more" class="secondary" type="button" hidden>加载更多</button>
+    <p id="records-empty" class="muted" hidden>没有符合条件的记录。</p>
+  </section>
+
+  <section id="view-detail" class="view" hidden>
+    <h1>记录详情</h1>
+    <div id="detail-body" class="card"></div>
+    <h2>修订历史</h2>
+    <ul id="detail-revisions" class="list"></ul>
+    <div class="card">
+      <button id="detail-edit" class="secondary" type="button">修改</button>
+      <button id="detail-revoke" class="danger" type="button">作废</button>
+    </div>
+    <p id="detail-conflict" class="conflict" hidden></p>
+    <p id="detail-feedback" class="error" hidden></p>
+  </section>
+
+  <section id="view-reminders" class="view" hidden>
+    <h1>提醒</h1>
+    <p class="note">关闭或查看提示不算完成照护。完成照护需要到「记录」页面提交一笔记录。</p>
+    <ul id="reminder-list" class="list"></ul>
+    <p id="reminders-feedback" class="error" hidden></p>
+  </section>
+
+  <section id="view-profile" class="view" hidden>
+    <h1>宠物资料</h1>
+    <form id="profile-form" class="card">
+      <label for="profile-name">名字</label>
+      <input id="profile-name" type="text" maxlength="24">
+      <label for="profile-birthday">生日</label>
+      <input id="profile-birthday" type="date">
+      <label for="profile-breed">品种</label>
+      <input id="profile-breed" type="text" maxlength="24">
+      <label for="profile-weight">体重（克）</label>
+      <input id="profile-weight" type="number" inputmode="numeric" min="1" max="200000" step="1">
+      <label for="profile-notes">备注</label>
+      <textarea id="profile-notes" rows="3" maxlength="200"></textarea>
+      <p class="muted">第一代不支持上传照片。</p>
+      <p id="profile-feedback" class="error" hidden></p>
+      <button class="primary" type="submit">保存资料</button>
+    </form>
+  </section>
+
+  <section id="view-account" class="view" hidden>
+    <h1>账号与导出</h1>
+
+    <form id="password-form" class="card">
+      <h2>修改密码</h2>
+      <label for="password-current">当前密码</label>
+      <input id="password-current" type="password" autocomplete="current-password" required>
+      <label for="password-new">新密码（至少 8 位）</label>
+      <input id="password-new" type="password" autocomplete="new-password" required>
+      <p id="password-feedback" class="error" hidden></p>
+      <button class="primary" type="submit">修改密码</button>
+    </form>
+
+    <div class="card">
+      <h2>看护人</h2>
+      <ul id="caregiver-list" class="plain"></ul>
+    </div>
+
+    <div class="card">
+      <h2>设备</h2>
+      <ul id="device-list" class="plain"></ul>
+      <label for="device-label">新设备名称</label>
+      <input id="device-label" type="text" maxlength="64" value="passport">
+      <button id="device-create" class="secondary" type="button">生成设备凭据</button>
+      <p id="device-token" class="token" hidden></p>
+      <p id="device-feedback" class="error" hidden></p>
+    </div>
+
+    <div class="card">
+      <h2>导出</h2>
+      <p class="muted">导出包含全部修订（含已作废的记录）。</p>
+      <a class="button" href="api/v1/export/records.csv" download>下载 CSV</a>
+      <a class="button" href="api/v1/export/records.json" download>下载 JSON</a>
+    </div>
+
+    <div class="card">
+      <h2>服务状态</h2>
+      <ul id="status-list" class="plain"></ul>
+    </div>
+
+    <button id="logout-button" class="danger" type="button">退出登录</button>
+  </section>
+
+</main>
+
+<nav id="tabbar" class="tabbar" hidden>
+  <a href="#/overview" data-tab="overview">今天</a>
+  <a href="#/record" data-tab="record">记录</a>
+  <a href="#/records" data-tab="records">列表</a>
+  <a href="#/reminders" data-tab="reminders">提醒</a>
+  <a href="#/profile" data-tab="profile">资料</a>
+  <a href="#/account" data-tab="account">账号</a>
+</nav>
+
+<script src="app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+# Caddy reverse proxy for the Cyber Lanlan service.
+#
+# Caddy obtains and renews the certificate automatically, redirects plain HTTP
+# to HTTPS and forwards everything to the service container on the internal
+# Docker network. Replace the domain in the compose environment file; the
+# placeholder below keeps the certificate request from hitting a real domain.
+
+{$LANLAN_DOMAIN:lanlan.example.invalid} {
+	encode zstd gzip
+
+	# Long-lived sync and export responses are small JSON; keep sensible limits.
+	request_body {
+		max_size 1MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	# The mobile page and the JSON API both live behind the same origin, which
+	# is what the CSRF Origin check expects.
+	reverse_proxy lanlan:8787 {
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	log {
+		output stderr
+		format console
+	}
+}

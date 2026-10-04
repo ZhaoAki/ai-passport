@@ -1,0 +1,63 @@
+# Cyber Lanlan deployment: the service container plus a Caddy reverse proxy.
+#
+#   cd deploy
+#   cp lanlan.env.example lanlan.env    # then edit it: domain, secrets, paths
+#   docker compose up -d
+#
+# Caddy terminates HTTPS and is the only container that publishes a port. The
+# service stays on the internal network and is never exposed directly.
+#
+# No paid or third-party service is required: both images are public and the
+# certificates come from Let's Encrypt through Caddy.
+
+name: lanlan
+
+services:
+  lanlan:
+    build:
+      context: ..
+      dockerfile: services/lanlan/Dockerfile
+    image: lanlan-service:local
+    restart: unless-stopped
+    env_file:
+      - ./lanlan.env
+    environment:
+      LANLAN_HOST: 0.0.0.0
+      LANLAN_PORT: "8787"
+      LANLAN_DB: /data/lanlan.sqlite3
+      LANLAN_ENV: production
+      LANLAN_SECURE_COOKIES: "1"
+      LANLAN_WEB_DIR: /srv/lanlan/web/lanlan
+    volumes:
+      - lanlan-data:/data
+    expose:
+      - "8787"
+    networks:
+      - lanlan-internal
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - lanlan
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      LANLAN_DOMAIN: ${LANLAN_DOMAIN:-lanlan.example.invalid}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - lanlan-internal
+
+networks:
+  lanlan-internal:
+    driver: bridge
+
+volumes:
+  lanlan-data:
+  caddy-data:
+  caddy-config:
