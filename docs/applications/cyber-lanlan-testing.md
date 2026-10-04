@@ -45,7 +45,7 @@ Service, web and protocol tests (no third-party packages required):
 
 ```bash
 python3 -m unittest discover -s services/lanlan/tests -t . -v
-python3 tools/lanlan_dev_server.py --check-config
+PYTHONPATH=services python3 -m lanlan check-config
 ```
 
 Firmware host logic tests and repository checks:

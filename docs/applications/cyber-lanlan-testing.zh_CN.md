@@ -41,7 +41,7 @@ Unverified: remaining board, instrument, or user checks
 
 ```bash
 python3 -m unittest discover -s services/lanlan/tests -t . -v
-python3 tools/lanlan_dev_server.py --check-config
+PYTHONPATH=services python3 -m lanlan check-config
 ```
 
 固件主机逻辑测试和仓库检查：
