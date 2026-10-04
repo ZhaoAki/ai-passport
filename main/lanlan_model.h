@@ -125,6 +125,11 @@ typedef struct {
     int64_t now_epoch;
     uint32_t cursor;           /* last applied service cursor */
     int battery_percent;       /* -1 when bsp_battery_soc() is unavailable */
+    /* First visible cache index of each list. The row helpers below fill the
+     * window that starts at these offsets, which is the same window the
+     * renderer draws, so a scrolled list stays aligned with its data. */
+    int list_offset;           /* records page window */
+    int reminder_offset;       /* reminder page window */
 } lanlan_records_view_t;
 
 /* Reminder row: display text plus the due state the page shows. */
@@ -177,11 +182,17 @@ const char *lanlan_view_records_empty_text(const lanlan_records_view_t *view);
 /* Empty-state line for the reminder list. */
 const char *lanlan_view_reminders_empty_text(const lanlan_records_view_t *view);
 
-/* "07:40 · 喂食 · 120 克" style row for a record; a missing record yields the
- * empty-state text. The index is clamped, so a stale selection is harmless. */
+/* One record list row: "07:40 · 喂食 · 120 克". The category appears exactly
+ * once; the optional second detail is a real sub-item, custom name, amount,
+ * duration or the note-truncation marker, never the category's own label. A
+ * missing record yields the empty-state text, so a stale selection is harmless. */
 void lanlan_view_record_row(const lanlan_records_view_t *view, int index, char *out,
                             size_t out_size);
-/* Reminder row with its configured time and due state. */
+/* One reminder list row per visible slot, starting at view->reminder_offset so
+ * output row i belongs to cache index reminder_offset + i. row[i].row carries
+ * the identity and the configured time, plus the disabled marker when the
+ * reminder is off; row[i].due is the separate flag for the due badge, which is
+ * the only place the due state is rendered. */
 void lanlan_view_reminder_rows(const lanlan_records_view_t *view, const lanlan_local_now_t *now,
                                lanlan_reminder_row_t *rows, size_t row_count);
 /* Top-bar sync text: failure, never-synced, or the data age. */

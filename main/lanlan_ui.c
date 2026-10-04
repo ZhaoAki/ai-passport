@@ -145,6 +145,80 @@ static const char *hint_for_page(lanlan_page_t page) {
     }
 }
 
+/* ------------------------------------------------------------ glyph check -- */
+
+/* Advances one UTF-8 character; false at the end of the string. Malformed bytes
+ * count as one character each, which is what the coverage check needs. */
+static bool ui_next_codepoint(const char **cursor, uint32_t *codepoint) {
+    const unsigned char *bytes = (const unsigned char *)*cursor;
+    if (bytes[0] == '\0') return false;
+    size_t length = lanlan_utf8_char_len(bytes[0]);
+    uint32_t value = bytes[0];
+    if (length > 1) {
+        value = (uint32_t)(bytes[0] & (0xFFu >> (length + 1)));
+        for (size_t k = 1; k < length; ++k) {
+            if (bytes[k] == '\0') break;
+            value = (value << 6) | (uint32_t)(bytes[k] & 0x3Fu);
+        }
+    }
+    *codepoint = value;
+    *cursor += (length == 0) ? 1 : length;
+    return true;
+}
+
+/* The doc's coverage check: a code point counts as covered only when the font
+ * answers and does not mark it as a placeholder. */
+static bool ui_font_covers(const lv_font_t *font, const char *text) {
+    if (!font || !text) return false;
+    const char *cursor = text;
+    uint32_t codepoint = 0;
+    while (ui_next_codepoint(&cursor, &codepoint)) {
+        if (codepoint < 0x20u) continue;
+        lv_font_glyph_dsc_t desc;
+        memset(&desc, 0, sizeof(desc));
+        if (!lv_font_get_glyph_dsc(font, &desc, codepoint, 0) || desc.is_placeholder) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* A caregiver display name is service data, so it can contain a code point the
+ * generated subsets do not cover. Drawing placeholder boxes for a person's name
+ * would be worse than admitting the gap, so the neutral label from the string
+ * table is used and the missing code point is logged once, never silently. */
+static const char *ui_caregiver_label(const lanlan_ui_state_t *state, unsigned index) {
+    const char *name = lanlan_caregiver_name_at(state->caregivers, index);
+    if (ui_font_covers(&lanlan_font_16, name)) return name;
+    static uint32_t reported[4];
+    const char *cursor = name;
+    uint32_t codepoint = 0;
+    while (ui_next_codepoint(&cursor, &codepoint)) {
+        bool covered = true;
+        if (codepoint >= 0x20u) {
+            lv_font_glyph_dsc_t desc;
+            memset(&desc, 0, sizeof(desc));
+            covered = lv_font_get_glyph_dsc(&lanlan_font_16, &desc, codepoint, 0)
+                      && !desc.is_placeholder;
+        }
+        if (covered) continue;
+        bool seen = false;
+        for (size_t i = 0; i < 4; ++i) {
+            if (reported[i] == codepoint) seen = true;
+        }
+        if (seen) continue;
+        for (size_t i = 0; i < 4; ++i) {
+            if (reported[i] == 0) {
+                reported[i] = codepoint;
+                break;
+            }
+        }
+        ESP_LOGW(TAG, "caregiver name needs an uncovered glyph U+%04X; showing the neutral label",
+                 (unsigned)codepoint);
+    }
+    return lanlan_caregiver_fallback_label();
+}
+
 /* ------------------------------------------------------------- status bar -- */
 
 static void render_status_bar(lv_obj_t *screen, const lanlan_ui_state_t *state) {
@@ -297,7 +371,7 @@ static void render_detail(lv_obj_t *screen, const lanlan_ui_state_t *state) {
                    &lanlan_font_16, UI_COLOR_MUTED);
         return;
     }
-    lv_obj_t *card = ui_panel(screen, 12, UI_BODY_TOP, 216, 196, UI_COLOR_CARD, UI_CARD_CORNER);
+    lv_obj_t *card = ui_panel(screen, 12, UI_BODY_TOP, 216, 202, UI_COLOR_CARD, UI_CARD_CORNER);
     if (!card) return;
 
     /* Large enough for the category, the date, the time and a full custom name
@@ -307,21 +381,28 @@ static void render_detail(lv_obj_t *screen, const lanlan_ui_state_t *state) {
     char time[16];
     lanlan_record_format_local_date(record, date, sizeof(date));
     lanlan_record_format_local_time(record, time, sizeof(time));
+
+    /* The category is the 24 px title, and the line under it is the local date and
+     * time only: no screen prints the category twice. */
     snprintf(text, sizeof(text), "%s", lanlan_category_label(record->category));
-    ui_text(card, 12, 8, 192, 30, text, &lanlan_font_24, UI_COLOR_INK, LV_TEXT_ALIGN_LEFT);
+    ui_text(card, 12, 2, 192, 30, text, &lanlan_font_24, UI_COLOR_INK, LV_TEXT_ALIGN_LEFT);
+    snprintf(text, sizeof(text), "%s %s", date, time);
+    ui_text(card, 12, 34, 192, 20, text, &lanlan_font_16, UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
 
-    char sub[LANLAN_RECORD_CUSTOM_BYTES * 4];
-    lanlan_record_subitem_label(record, sub, sizeof(sub));
-    snprintf(text, sizeof(text), "%s %s  %s", date, time, sub);
-    ui_text(card, 12, 42, 192, 20, text, &lanlan_font_16, UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
-
-    /* The compact view stops after the time and the sub-item; the full view adds
-     * the quantity, the performer, the note and the revision marker. */
+    /* Both views resolve the caregiver through the learned directory, so a name
+     * the service changed is picked up and an unknown one shows the neutral
+     * label instead of a slot number. */
     if (!state->model->detail_full) {
-        snprintf(text, sizeof(text), "%s  %s", LANLAN_STR_DETAIL_VIEW_COMPACT,
-                 LANLAN_STR_RECORDS_OPEN_DETAIL);
-        ui_text(card, 12, 158, 192, 20, text, &lanlan_font_16, UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
+        snprintf(text, sizeof(text), "%s %s", LANLAN_STR_DETAIL_PERFORMER,
+                 ui_caregiver_label(state, record->performed_by));
+        ui_text(card, 12, 150, 192, 20, text, &lanlan_font_16, UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
     } else {
+        /* Row order follows the design's field list: time, performer, quantity,
+         * note, revision marker. */
+        snprintf(text, sizeof(text), "%s %s", LANLAN_STR_DETAIL_PERFORMER,
+                 ui_caregiver_label(state, record->performed_by));
+        ui_text(card, 12, 60, 192, 20, text, &lanlan_font_16, UI_COLOR_INK, LV_TEXT_ALIGN_LEFT);
+
         char amount[48];
         char duration[48];
         lanlan_record_format_amount(record, amount, sizeof(amount));
@@ -331,34 +412,32 @@ static void render_detail(lv_obj_t *screen, const lanlan_ui_state_t *state) {
         } else {
             snprintf(text, sizeof(text), "%s %s", LANLAN_STR_DETAIL_AMOUNT, amount);
         }
-        ui_text(card, 12, 68, 192, 20, text, &lanlan_font_16, UI_COLOR_INK, LV_TEXT_ALIGN_LEFT);
+        ui_text(card, 12, 86, 192, 20, text, &lanlan_font_16, UI_COLOR_INK, LV_TEXT_ALIGN_LEFT);
 
-        snprintf(text, sizeof(text), "%s %s", LANLAN_STR_DETAIL_PERFORMER,
-                 lanlan_caregiver_name(record->performed_by));
-        ui_text(card, 12, 90, 192, 20, text, &lanlan_font_16, UI_COLOR_INK, LV_TEXT_ALIGN_LEFT);
+        snprintf(text, sizeof(text), "%s %s", LANLAN_STR_DETAIL_CREATOR,
+                 ui_caregiver_label(state, record->created_by));
+        ui_text(card, 12, 112, 192, 20, text, &lanlan_font_16, UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
 
+        /* The whole truncation marker must be visible. The preview is at most 48
+         * bytes plus the 7-glyph marker: 536 px even when every byte is a
+         * half-width character, which is well inside three 212 px lines, so a
+         * 60 px box (three 20 px font lines) can never clip it. The note is the
+         * only label that uses the card's full width, which keeps the marker from
+         * being split off on its own line. */
         char note[80];
         lanlan_record_note_preview(record, note, sizeof(note));
         snprintf(text, sizeof(text), "%s %s", LANLAN_STR_DETAIL_NOTE, note);
-        ui_wrapped(card, 12, 112, 192, 40, text, &lanlan_font_16, UI_COLOR_MUTED);
-
-        if (record->version > 1) {
-            snprintf(text, sizeof(text), "%s  %s %s", LANLAN_STR_DETAIL_REVISED,
-                     LANLAN_STR_DETAIL_VIEW_FULL, time);
-            ui_text(card, 12, 158, 192, 20, text, &lanlan_font_16, UI_COLOR_WARN,
-                    LV_TEXT_ALIGN_LEFT);
-        }
+        ui_wrapped(card, 2, 138, 212, 60, text, &lanlan_font_16, UI_COLOR_MUTED);
     }
 
-    /* Two view tabs; the active one is filled. Both are 24 px tall so they never
-     * reach the hint line. */
+    /* Two view tabs; the card ends above them and they never reach the hint bar. */
     const char *tabs[2] = {LANLAN_STR_DETAIL_VIEW_COMPACT, LANLAN_STR_DETAIL_VIEW_FULL};
     for (int i = 0; i < 2; ++i) {
         bool active = (state->model->detail_full ? 1 : 0) == i;
-        lv_obj_t *tab = ui_panel(screen, 12 + 110 * i, 258, 106, 26,
+        lv_obj_t *tab = ui_panel(screen, 12 + 110 * i, 262, 106, 22,
                                  active ? UI_COLOR_SELECTED : UI_COLOR_CARD, UI_ROW_CORNER);
         if (!tab) continue;
-        ui_text(tab, 4, 4, 98, 18, tabs[i], &lanlan_font_16,
+        ui_text(tab, 4, 2, 98, 18, tabs[i], &lanlan_font_16,
                 active ? UI_COLOR_BODY : UI_COLOR_INK, LV_TEXT_ALIGN_CENTER);
     }
 }
@@ -526,22 +605,27 @@ static void render_reminders(lv_obj_t *screen, const lanlan_ui_state_t *state) {
         if (index >= (int)state->view->cache.reminder_count) break;
         if (rows[i].row[0] == '\0') continue;
         bool selected = index == state->model->reminder_index;
-        lv_obj_t *row = ui_panel(screen, 12, UI_BODY_TOP + 40 * (int)i, 216, 36,
+        /* 32 px rows keep five of them plus the two footer lines inside the
+         * 56..288 body band. */
+        lv_obj_t *row = ui_panel(screen, 12, UI_BODY_TOP + 34 * (int)i, 216, 32,
                                  selected ? UI_COLOR_SELECTED : UI_COLOR_CARD, UI_ROW_CORNER);
         if (!row) continue;
-        ui_text(row, 10, 8, 148, 20, rows[i].row, &lanlan_font_16,
+        ui_text(row, 10, 6, 148, 20, rows[i].row, &lanlan_font_16,
                 selected ? UI_COLOR_BODY : UI_COLOR_INK, LV_TEXT_ALIGN_LEFT);
         if (rows[i].due) {
-            ui_text(row, 160, 8, 48, 20, LANLAN_STR_REMINDERS_DUE, &lanlan_font_16,
+            ui_text(row, 160, 6, 48, 20, LANLAN_STR_REMINDERS_DUE, &lanlan_font_16,
                     selected ? UI_COLOR_BODY : UI_COLOR_WARN, LV_TEXT_ALIGN_RIGHT);
         }
     }
-    ui_wrapped(screen, 12, 256, 216, 32, LANLAN_STR_REMINDERS_DISMISS_NOTE, &lanlan_font_16,
-               UI_COLOR_MUTED);
     if (!state->model->reminder_sound_enabled) {
-        ui_text(screen, 12, 236, 216, 16, LANLAN_STR_REMINDERS_SOUND_OFF, &lanlan_font_16,
+        ui_text(screen, 12, 226, 216, 20, LANLAN_STR_REMINDERS_SOUND_OFF, &lanlan_font_16,
                 UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
     }
+    /* The note is 20 characters, which is two 216 px lines, and its box ends
+     * exactly at the body bottom (288): four pixels above the hint-bar band, so
+     * the second line keeps its descenders and never touches the hint line. */
+    ui_wrapped(screen, 12, 248, 216, 40, LANLAN_STR_REMINDERS_DISMISS_NOTE, &lanlan_font_16,
+               UI_COLOR_MUTED);
 }
 
 /* ----------------------------------------------------------- status page -- */
@@ -550,7 +634,9 @@ static void render_status(lv_obj_t *screen, const lanlan_ui_state_t *state) {
     lv_obj_t *card = ui_panel(screen, 12, UI_BODY_TOP, 216, 150, UI_COLOR_CARD, UI_CARD_CORNER);
     if (!card) return;
     ui_dot(card, 14, 18, state->status_color);
-    ui_text(card, 32, 12, 172, 22, state->status_text ? state->status_text : "", &lanlan_font_16,
+    /* Wide enough for the longest state line the application can pass (the
+     * credential-rejected instruction), so it is not cut with DOTS. */
+    ui_text(card, 32, 12, 180, 22, state->status_text ? state->status_text : "", &lanlan_font_16,
             UI_COLOR_INK, LV_TEXT_ALIGN_LEFT);
     if (state->cache_rebuilt) {
         ui_wrapped(card, 14, 46, 188, 40, LANLAN_STR_STATUS_CACHE_REBUILT, &lanlan_font_16,
@@ -562,15 +648,42 @@ static void render_status(lv_obj_t *screen, const lanlan_ui_state_t *state) {
     if (state->status_detail) {
         ui_wrapped(card, 14, 92, 188, 44, state->status_detail, &lanlan_font_16, UI_COLOR_MUTED);
     }
-    ui_text(screen, 12, 216, 216, 20, LANLAN_STR_STATUS_RETRY_HINT, &lanlan_font_16,
-            UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
+    /* The retry instruction belongs to the bottom hint line only, which this page
+     * already shows, so it is deliberately not repeated here. */
+
+    /* The model's sync detail is one long sentence that wraps into the hint band,
+     * so it is composed here as two single-line labels instead. Both are bounded
+     * (DOTS), 20 px tall and end at y=282, well above the hint bar at y=292. */
+    char text[96];
+    const lanlan_records_view_t *view = state->view;
+    if (view && view->last_sync_epoch > 0) {
+        lanlan_date_t date;
+        int hour = 0;
+        int minute = 0;
+        if (lanlan_time_local_date(view->last_sync_epoch, view->utc_offset_min, &date)
+                == LANLAN_TIME_OK
+            && lanlan_time_local_hhmm(view->last_sync_epoch, view->utc_offset_min, &hour,
+                                      &minute) == LANLAN_TIME_OK) {
+            snprintf(text, sizeof(text), "%s %d%s%d%s %02d:%02d", LANLAN_STR_SYNC_DETAIL,
+                     (int)date.month, LANLAN_STR_QUANTITY_DATE_MONTH_UNIT, (int)date.day_in_month,
+                     LANLAN_STR_QUANTITY_DATE_DAY_UNIT, hour, minute);
+        } else {
+            snprintf(text, sizeof(text), "%s %s", LANLAN_STR_SYNC_DETAIL, LANLAN_STR_SYNC_NEVER);
+        }
+    } else {
+        snprintf(text, sizeof(text), "%s %s", LANLAN_STR_SYNC_DETAIL, LANLAN_STR_SYNC_NEVER);
+    }
+    ui_text(screen, 12, 238, 216, 20, text, &lanlan_font_16, UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
+
+    snprintf(text, sizeof(text), "%s %u %s · %s %u", LANLAN_STR_SYNC_CACHE_COUNT,
+             (unsigned)(view ? view->cache.record_count : 0u), LANLAN_STR_SYNC_RECORDS_UNIT,
+             LANLAN_STR_SYNC_CURSOR, (unsigned)(view ? view->cursor : 0u));
+    ui_text(screen, 12, 262, 216, 20, text, &lanlan_font_16, UI_COLOR_MUTED, LV_TEXT_ALIGN_LEFT);
+
     if (!state->secure_url) {
-        ui_text(screen, 12, 240, 216, 20, "http:// (LAN dev)", &lanlan_font_16, UI_COLOR_WARN,
+        ui_text(screen, 12, 212, 216, 20, "http:// (LAN dev)", &lanlan_font_16, UI_COLOR_WARN,
                 LV_TEXT_ALIGN_LEFT);
     }
-    char detail[128];
-    lanlan_view_sync_detail_text(state->view, detail, sizeof(detail));
-    ui_wrapped(screen, 12, 262, 216, 24, detail, &lanlan_font_16, UI_COLOR_MUTED);
 }
 
 /* ----------------------------------------------------------- entry points -- */
@@ -613,36 +726,23 @@ static void ui_font_audit(void) {
     const char *const names[2] = {"16", "24"};
     size_t missing = 0;
     for (size_t f = 0; f < 2; ++f) {
-      const lv_font_t *font = fonts[f];
-      for (int id = 0; id < LANLAN_STR_COUNT; ++id) {
-        const char *text = lanlan_strings[id];
-        if (!text) continue;
-        for (size_t i = 0; text[i] != '\0';) {
-            unsigned char lead = (unsigned char)text[i];
-            uint32_t codepoint = lead;
-            size_t length = lanlan_utf8_char_len(lead);
-            if (length == 1) {
-                codepoint = lead;
-            } else {
-                codepoint = (uint32_t)(lead & (0xFFu >> (length + 1)));
-                for (size_t k = 1; k < length && text[i + k] != '\0'; ++k) {
-                    codepoint = (codepoint << 6) | (uint32_t)(text[i + k] & 0x3Fu);
+        const lv_font_t *font = fonts[f];
+        for (int id = 0; id < LANLAN_STR_COUNT; ++id) {
+            const char *text = lanlan_strings[id];
+            if (!text) continue;
+            const char *cursor = text;
+            uint32_t codepoint = 0;
+            while (ui_next_codepoint(&cursor, &codepoint)) {
+                if (codepoint < 0x20u) continue;
+                lv_font_glyph_dsc_t desc;
+                memset(&desc, 0, sizeof(desc));
+                if (!lv_font_get_glyph_dsc(font, &desc, codepoint, 0) || desc.is_placeholder) {
+                    ESP_LOGW(TAG, "font %s gap: U+%04X in string id %d", names[f],
+                             (unsigned)codepoint, id);
+                    ++missing;
                 }
             }
-            if (codepoint < 0x20) {
-                i += length;
-                continue;
-            }
-            lv_font_glyph_dsc_t dsc;
-            memset(&dsc, 0, sizeof(dsc));
-            if (!lv_font_get_glyph_dsc(font, &dsc, codepoint, 0) || dsc.is_placeholder) {
-                ESP_LOGW(TAG, "font %s gap: U+%04X in string id %d", names[f],
-                         (unsigned)codepoint, id);
-                ++missing;
-            }
-            i += length;
         }
-      }
     }
     ESP_LOGI(TAG, "font audit: %u missing glyphs over %d strings x 2 sizes", (unsigned)missing,
              (int)LANLAN_STR_COUNT);

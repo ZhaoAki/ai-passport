@@ -425,22 +425,44 @@ void lanlan_view_record_row(const lanlan_records_view_t *view, int index, char *
     if (lanlan_record_format_local_time(record, time_text, sizeof(time_text)) == 0) {
         snprintf(time_text, sizeof(time_text), "--:--");
     }
+    const char *category = lanlan_category_label(record->category);
+
+    /* Second field: a REAL sub-item or custom name only. The one exception is a
+     * custom name falling back to its category word: that is still a name the
+     * caregiver chose, so it is kept while the category's OWN label is not. */
     char subitem[LANLAN_RECORD_CUSTOM_BYTES];
     lanlan_record_subitem_label(record, subitem, sizeof(subitem));
+    if (strcmp(subitem, category) == 0) subitem[0] = '\0';
+
     char amount[32];
-    size_t amount_len = lanlan_record_format_amount(record, amount, sizeof(amount));
-    if (amount_len == 0 || !lanlan_record_amount_is_known(record)) {
+    if (!lanlan_record_amount_is_known(record)
+        || lanlan_record_format_amount(record, amount, sizeof(amount)) == 0) {
         amount[0] = '\0';
     }
     char duration[24];
-    size_t duration_len = lanlan_record_format_duration(record, duration, sizeof(duration));
-    if (duration_len == 0) duration[0] = '\0';
-    const char *category = lanlan_category_label(record->category);
+    if (lanlan_record_format_duration(record, duration, sizeof(duration)) == 0) {
+        duration[0] = '\0';
+    }
+
+    /* Detail priority: sub-item or custom name, then the measured quantity
+     * (amount before duration), then the note's truncation marker. Exactly one
+     * detail is rendered so the row stays on a single line; the note text itself
+     * is deliberately not duplicated here because every row in this list would
+     * carry the same sentence. */
+    const char *detail = NULL;
     if (subitem[0] != '\0') {
-        snprintf(out, out_size, "%s · %s · %s%s%s", time_text, category, subitem, amount,
-                 duration);
+        detail = subitem;
+    } else if (amount[0] != '\0') {
+        detail = amount;
+    } else if (duration[0] != '\0') {
+        detail = duration;
+    } else if (record->note_truncated) {
+        detail = LANLAN_RECORD_FIXED_LABELS[9];
+    }
+    if (detail != NULL && detail[0] != '\0') {
+        snprintf(out, out_size, "%s · %s · %s", time_text, category, detail);
     } else {
-        snprintf(out, out_size, "%s · %s%s%s", time_text, category, amount, duration);
+        snprintf(out, out_size, "%s · %s", time_text, category);
     }
     out[out_size - 1] = '\0';
 }
@@ -453,28 +475,36 @@ void lanlan_view_reminder_rows(const lanlan_records_view_t *view, const lanlan_l
         rows[i].due = false;
     }
     if (!view) return;
-    for (size_t i = 0; i < row_count && i < view->cache.reminder_count; ++i) {
-        const lanlan_reminder_t *reminder = &view->cache.reminders[i];
-        char subitem[LANLAN_RECORD_CUSTOM_BYTES];
+    /* The renderer maps output row i to cache index reminder_offset + i, so this
+     * function must fill the visible window, not the first rows of the cache. */
+    const int offset = view->reminder_offset;
+    for (size_t i = 0; i < row_count; ++i) {
+        int index = offset + (int)i;
+        if (index < 0 || index >= (int)view->cache.reminder_count) break;
+        const lanlan_reminder_t *reminder = &view->cache.reminders[index];
+
+        /* The row carries the reminder's identity and its configured time. The
+         * due/disabled state is a separate marker: the caller draws the due
+         * badge from rows[i].due, and a disabled reminder is marked here because
+         * the caller cannot draw a due badge for it. */
         lanlan_record_t wrapper;
         memset(&wrapper, 0, sizeof(wrapper));
         wrapper.category = reminder->category;
         wrapper.subitem = reminder->subitem;
         memcpy(wrapper.custom_name, reminder->custom_name, sizeof(wrapper.custom_name));
+        char subitem[LANLAN_RECORD_CUSTOM_BYTES];
         lanlan_record_subitem_label(&wrapper, subitem, sizeof(subitem));
         const char *category = lanlan_category_label(reminder->category);
         const char *name = subitem[0] != '\0' ? subitem : category;
         const char *time_text = reminder->time_local[0] != '\0' ? reminder->time_local : "--:--";
+
         rows[i].due = lanlan_reminder_due(reminder, now, view->clock_trusted)
                       == LANLAN_REMINDER_DUE;
         if (!reminder->enabled) {
-            snprintf(rows[i].row, sizeof(rows[i].row), "%s %s", name, time_text);
-        } else if (rows[i].due) {
             snprintf(rows[i].row, sizeof(rows[i].row), "%s %s · %s", name, time_text,
-                     LANLAN_STR_REMINDERS_DUE);
+                     LANLAN_STR_REMINDERS_DISABLED);
         } else {
-            snprintf(rows[i].row, sizeof(rows[i].row), "%s %s · %s", name, time_text,
-                     LANLAN_STR_REMINDERS_SOUND_OFF);
+            snprintf(rows[i].row, sizeof(rows[i].row), "%s %s", name, time_text);
         }
         rows[i].row[sizeof(rows[i].row) - 1] = '\0';
     }

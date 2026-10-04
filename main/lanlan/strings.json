@@ -29,6 +29,7 @@
     "view_compact": "简版",
     "view_full": "完整",
     "performer": "执行人",
+    "creator": "记录人",
     "duration": "时长",
     "amount": "数量",
     "note": "备注",
@@ -85,8 +86,8 @@
     "audio": "声音播放失败"
   },
   "caregivers": {
-    "hehe": "乐乐",
-    "yangyang": "洋洋",
+    "hehe": "赫赫",
+    "yangyang": "羊羊",
     "unknown": "未知"
   },
   "categories": {

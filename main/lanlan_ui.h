@@ -22,6 +22,7 @@
 #include "esp_err.h"
 #include "lvgl.h"
 
+#include "lanlan_caregiver.h"
 #include "lanlan_model.h"
 #include "lanlan_reminder.h"
 
@@ -31,6 +32,10 @@ typedef struct {
     const lanlan_model_t *model;
     const lanlan_records_view_t *view;
     const lanlan_local_now_t *now;
+    /* Caregiver directory (service user id -> display name). A NULL table, an
+     * unknown id and a rejected name all render the neutral label, never a raw
+     * id and never an empty string. */
+    const lanlan_caregiver_table_t *caregivers;
     int battery_percent;      /* -1 hides the battery reading entirely */
     const char *status_text;  /* top-bar sync text, already localized */
     uint32_t status_color;    /* status dot colour, 0xRRGGBB */

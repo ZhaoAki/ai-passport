@@ -2,7 +2,7 @@
 
 # 赛博懒懒护照应用（M0 设计）
 
-本文确定赛博懒懒应用在 FoloToy AI 护照（ESP32-C3、8 MB flash、无 PSRAM、240x320 SPI 显示屏、三个按键、ES8311 音频、2.4 GHz Wi-Fi）上的第一代设计。云服务、记录模型、身份认证和同步协议在 [cyber-lanlan-service.md](cyber-lanlan-service.md) 中规定；验证与验收映射见 [cyber-lanlan-testing.md](cyber-lanlan-testing.md)。
+本文确定赛博懒懒应用在 FoloToy AI 护照（ESP32-C3、8 MB flash、无 PSRAM、240x320 SPI 显示屏、三个按键、ES8311 音频、2.4 GHz Wi-Fi）上的第一代设计。云服务、记录模型、身份认证和同步协议在 [cyber-lanlan-service.md](cyber-lanlan-service.md) 中规定；验证与验收映射见 [cyber-lanlan-testing.md](cyber-lanlan-testing.md)。交付记录、运行说明和当前待办事项见 [cyber-lanlan-delivery.zh_CN.md](cyber-lanlan-delivery.zh_CN.md)。
 
 该应用是衍生应用，因此自行设计界面、导航和视觉语言。它不复用基线硬件测试菜单、`demo_*.c` 页面或 `ui_pixel` 测试外壳。它复用 BSP API、普通 LVGL 控件，以及仓库中已有的生命周期和并发模式。
 

@@ -436,8 +436,12 @@ static void test_labels_and_time_formatting(void) {
     lanlan_record_subitem_label(&meal, label, sizeof(label));
     assert(strcmp(label, "喂食") == 0);
 
-    assert(strcmp(lanlan_caregiver_name(0), "乐乐") == 0);
-    assert(strcmp(lanlan_caregiver_name(1), "洋洋") == 0);
+    /* Fallback labels must match the specification and the service's
+     * authoritative display names for the hehe/yangyang accounts. */
+    assert(strcmp(lanlan_caregiver_name(0), "赫赫") == 0);
+    assert(strcmp(lanlan_caregiver_name(1), "羊羊") == 0);
+    assert(strcmp(lanlan_caregiver_name(0), LANLAN_STR_CAREGIVERS_HEHE) == 0);
+    assert(strcmp(lanlan_caregiver_name(1), LANLAN_STR_CAREGIVERS_YANGYANG) == 0);
     assert(strcmp(lanlan_caregiver_name(2), "-") == 0);
 
     /* 2025-10-09T08:53:20Z at +08:00 is 16:53 on 10月9日. */

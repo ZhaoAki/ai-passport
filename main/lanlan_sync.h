@@ -26,6 +26,7 @@
 #include "esp_err.h"
 
 #include "lanlan_cache.h"
+#include "lanlan_caregiver.h"
 
 /* ------------------------------------------------------- configuration -- */
 
@@ -57,6 +58,7 @@
 #define LANLAN_NVS_KEY_CRED "cred_v1"
 #define LANLAN_NVS_KEY_CACHE "cache_v1"
 #define LANLAN_NVS_KEY_REMINDER "rem_v1"
+/* lanlan_caregiver.h owns the payload: versioned, fixed length, CRC checked. */
 #define LANLAN_NVS_KEY_CAREGIVER "care_v1"
 
 /* `cfg_v1`: schema version, UTC offset, mute, reminder sound, dim and
@@ -182,11 +184,16 @@ typedef struct {
     /* Clock update from SNTP or from a service response, in UTC seconds.
      * `trusted` already applies lanlan_time_clock_trusted(). */
     void (*clock)(int64_t server_epoch, int16_t utc_offset_minutes, bool trusted, void *user);
-    /* Maps a caregiver user id to the 0/1 index the record struct stores and
-     * the names come from. `is_new` is set when the id was seen for the first
-     * time and the glue layer should persist its table with the next commit.
-     * Returns 0xFF when the id cannot be mapped. */
-    uint8_t (*caregiver)(const uint8_t id[LANLAN_ID_BYTES], bool *is_new, void *user);
+    /* Applies the family caregiver directory carried by the `members` array.
+     * Called before the records of the same payload are mapped, and only when
+     * the array is present and usable: an absent, empty or malformed list is
+     * "no update", never a sync error. The entries are borrowed for the call
+     * only and must be copied by the hook. */
+    void (*members)(const lanlan_caregiver_member_t *members, int count, void *user);
+    /* Maps a record's caregiver user id to the 0/1 slot the record struct
+     * stores. Must return 0 or 1 (the record validator rejects anything above
+     * 1), must be stable for one id, and must never fail. */
+    uint8_t (*caregiver)(const char *id, void *user);
     void *user;
 } lanlan_sync_hooks_t;
 

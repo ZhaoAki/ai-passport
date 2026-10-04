@@ -7,7 +7,8 @@ FoloToy AI Passport (ESP32-C3, 8 MB flash, no PSRAM, 240x320 SPI display, three 
 ES8311 audio, 2.4 GHz Wi-Fi). The cloud service, record model, authentication and sync
 protocol are specified in
 [cyber-lanlan-service.md](cyber-lanlan-service.md); verification and acceptance mapping are
-in [cyber-lanlan-testing.md](cyber-lanlan-testing.md).
+in [cyber-lanlan-testing.md](cyber-lanlan-testing.md). The handover record, run instructions
+and the current open items are in [cyber-lanlan-delivery.md](cyber-lanlan-delivery.md).
 
 The application is a derived application and therefore designs its own screens, navigation
 and visual language. It does not reuse the baseline hardware-test menu, the `demo_*.c`

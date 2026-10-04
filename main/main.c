@@ -33,6 +33,7 @@
 #include "nvs_flash.h"
 
 #include "lanlan_cache.h"
+#include "lanlan_caregiver.h"
 #include "lanlan_model.h"
 #include "lanlan_record.h"
 #include "lanlan_reminder.h"
@@ -57,7 +58,6 @@ extern const uint8_t lanlan_sfx_end[] asm("_binary_lanlan_sfx_16k_pcm_end");
 #define LANLAN_BACKLIGHT_DIM_PERCENT 15
 #define LANLAN_BACKLIGHT_ON_PERCENT 65
 #define LANLAN_AUDIO_IDLE_SUSPEND_US (2000000LL)
-#define LANLAN_MAX_CAREGIVERS 2
 #define LANLAN_RUNG_BLOB_BYTES \
     (2u + LANLAN_CACHE_REMINDER_CAPACITY * (LANLAN_ID_BYTES + 8u))
 
@@ -113,12 +113,14 @@ static struct {
     int64_t day[LANLAN_CACHE_REMINDER_CAPACITY];
 } s_rungs;
 
-/* Caregiver id -> 0/1 index table (NVS `care_v1`). The compact record carries
- * the service's user id; the record struct stores an index. */
-static struct {
-    uint8_t used;
-    uint8_t id[LANLAN_MAX_CAREGIVERS][LANLAN_ID_BYTES];
-} s_caregivers;
+/* Caregiver directory (NVS `care_v1`): service user id -> display name, plus
+ * the 0/1 slot the cached record struct stores. Defined and host-tested in
+ * main/lanlan_caregiver.c. */
+static lanlan_caregiver_table_t s_caregivers;
+/* Set when `care_v1` could not be read as the current format. The cached
+ * records then hold slots from the previous directory, so they are dropped and
+ * re-fetched instead of showing the wrong caregiver. */
+static bool s_caregiver_reset;
 
 /* Backlight and animation bookkeeping. */
 static int64_t s_last_input_us;
@@ -239,11 +241,11 @@ static esp_err_t store_rungs_locked(void) {
 }
 
 static esp_err_t store_caregivers_locked(void) {
-    uint8_t blob[1 + LANLAN_MAX_CAREGIVERS * LANLAN_ID_BYTES];
-    memset(blob, 0, sizeof(blob));
-    blob[0] = s_caregivers.used;
-    memcpy(blob + 1, s_caregivers.id, sizeof(s_caregivers.id));
-    return nvs_set_blob(s_nvs, LANLAN_NVS_KEY_CAREGIVER, blob, sizeof(blob));
+    /* Versioned, fixed length and CRC checked by the caregiver module. */
+    uint8_t blob[LANLAN_CAREGIVER_BLOB_BYTES];
+    size_t length = lanlan_caregiver_encode(&s_caregivers, blob, sizeof(blob));
+    if (length == 0) return ESP_ERR_INVALID_SIZE;
+    return nvs_set_blob(s_nvs, LANLAN_NVS_KEY_CAREGIVER, blob, length);
 }
 
 static void load_config(void) {
@@ -278,13 +280,19 @@ static void load_config(void) {
         }
         s_rungs.count = (uint8_t)count;
     }
-    uint8_t care_blob[1 + LANLAN_MAX_CAREGIVERS * LANLAN_ID_BYTES];
+    uint8_t care_blob[LANLAN_CAREGIVER_BLOB_BYTES];
     len = sizeof(care_blob);
-    memset(&s_caregivers, 0, sizeof(s_caregivers));
-    if (nvs_get_blob(s_nvs, LANLAN_NVS_KEY_CAREGIVER, care_blob, &len) == ESP_OK
-        && len >= sizeof(care_blob)) {
-        s_caregivers.used = care_blob[0];
-        memcpy(s_caregivers.id, care_blob + 1, sizeof(s_caregivers.id));
+    lanlan_caregiver_clear(&s_caregivers);
+    s_caregiver_reset = true;
+    if (nvs_get_blob(s_nvs, LANLAN_NVS_KEY_CAREGIVER, care_blob, &len) == ESP_OK) {
+        lanlan_caregiver_status_t status = lanlan_caregiver_decode(care_blob, len, &s_caregivers);
+        s_caregiver_reset = status != LANLAN_CAREGIVER_OK;
+        if (s_caregiver_reset) {
+            ESP_LOGW(TAG, "caregiver directory rejected (%s); re-learning from the service",
+                     lanlan_caregiver_status_name(status));
+        }
+    } else {
+        ESP_LOGI(TAG, "no caregiver directory yet; it is learned from the service");
     }
     xSemaphoreGive(s_nvs_mutex);
 }
@@ -353,6 +361,16 @@ static void cache_load(void) {
     }
     lanlan_cache_status_t status = lanlan_cache_decode(image, len, result);
     if (status == LANLAN_CACHE_OK || status == LANLAN_CACHE_EMPTY) {
+        if (s_caregiver_reset && result->cache.record_count > 0) {
+            /* A cached record stores a caregiver *slot*; the directory it was
+             * mapped against is gone, so the records are re-fetched rather than
+             * attributed to the wrong person. */
+            ESP_LOGW(TAG, "caregiver directory changed; rebuilding the record cache");
+            result->cache.record_count = 0;
+            result->cache.tombstone_count = 0;
+            result->cache.cursor = 0;
+            s_cache_rebuilt = true;
+        }
         lanlan_model_load_cache(s_model, &result->cache);
         s_cursor = result->cache.cursor;
         rungs_apply();
@@ -373,29 +391,32 @@ static void cache_load(void) {
 
 /* ============================================================ sync glue == */
 
-/* Returns the caregiver index for a service user id, filling the two-slot table
- * in first-seen order. The record validator accepts only 0 and 1, and the first
- * generation ships exactly two caregivers. */
-static uint8_t caregiver_lookup(const uint8_t id[LANLAN_ID_BYTES], bool *is_new, void *user) {
+/* Applies the family directory from the service. It runs before the records of
+ * the same payload are mapped, so a record's caregiver id resolves through the
+ * service's own list rather than through whatever order records arrived in. */
+static void sync_members(const lanlan_caregiver_member_t *members, int count, void *user) {
     (void)user;
-    if (is_new) *is_new = false;
-    for (unsigned i = 0; i < LANLAN_MAX_CAREGIVERS; ++i) {
-        if ((s_caregivers.used & (1u << i)) != 0
-            && memcmp(s_caregivers.id[i], id, LANLAN_ID_BYTES) == 0) {
-            return (uint8_t)i;
-        }
-    }
-    for (unsigned i = 0; i < LANLAN_MAX_CAREGIVERS; ++i) {
-        if ((s_caregivers.used & (1u << i)) == 0) {
-            memcpy(s_caregivers.id[i], id, LANLAN_ID_BYTES);
-            s_caregivers.used |= (uint8_t)(1u << i);
-            if (is_new) *is_new = true;
-            return (uint8_t)i;
-        }
-    }
-    /* A third caregiver cannot be represented; the records still render, with
-     * the unknown-name fallback. */
-    return 0;
+    if (!s_app_mutex) return;
+    xSemaphoreTake(s_app_mutex, portMAX_DELAY);
+    lanlan_caregiver_apply_members(&s_caregivers, members, count);
+    s_caregiver_reset = false;
+    s_render_dirty = true;
+    xSemaphoreGive(s_app_mutex);
+}
+
+/* Maps a record's caregiver user id to the 0/1 slot the record struct stores.
+ * The record validator accepts only 0 and 1, so an id that cannot take a slot
+ * (a third caregiver) still has to answer with one; such a record renders the
+ * neutral label for the slot it lands in. */
+static uint8_t sync_caregiver(const char *id, void *user) {
+    (void)user;
+    if (!s_app_mutex) return 0;
+    xSemaphoreTake(s_app_mutex, portMAX_DELAY);
+    int slot = lanlan_caregiver_learn(&s_caregivers, id, NULL);
+    if (slot < 0) slot = lanlan_caregiver_index_for_id(&s_caregivers, id);
+    if (slot < 0) slot = 0;
+    xSemaphoreGive(s_app_mutex);
+    return (uint8_t)slot;
 }
 
 /* The commit rule, in one place: apply into the staging buffer, persist the
@@ -483,6 +504,10 @@ static void refresh_view(void) {
     s_view->last_sync_epoch = lanlan_sync_last_ok_epoch();
     s_view->now_epoch = clock_now();
     s_view->battery_percent = s_battery;
+    /* The row helpers fill the window that starts at these offsets, so the
+     * renderer and the data it draws stay aligned while a list is scrolled. */
+    s_view->list_offset = s_model->list_offset;
+    s_view->reminder_offset = s_model->reminder_offset;
 }
 
 /* -------------------------------------------------------------- audio -- */
@@ -581,6 +606,7 @@ static void render(void) {
     state.model = s_model;
     state.view = s_view;
     state.now = &local;
+    state.caregivers = &s_caregivers;
     state.battery_percent = s_battery;
     state.status_text = status_text;
     state.status_color = sync_state_color(sync_state);
@@ -1142,7 +1168,8 @@ void app_main(void) {
         .cursor = s_cursor,
         .apply = apply_sync_batch,
         .clock = clock_apply,
-        .caregiver = caregiver_lookup,
+        .members = sync_members,
+        .caregiver = sync_caregiver,
         .user = NULL,
     };
     esp_err_t sync_err = lanlan_sync_init(&s_config, &s_cred, &hooks);

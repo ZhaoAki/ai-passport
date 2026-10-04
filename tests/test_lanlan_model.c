@@ -358,6 +358,259 @@ static void test_companion_never_emits_a_record_action(void) {
     assert(!lanlan_action_is_record_write(LANLAN_ACTION_RECORD_OPEN));
 }
 
+/* UTF-8-safe occurrence counter for the "category appears once" assertions. */
+static int count_substring(const char *haystack, const char *needle) {
+    int count = 0;
+    size_t length = strlen(needle);
+    if (length == 0) return 0;
+    for (const char *at = haystack; (at = strstr(at, needle)) != NULL; at += length) ++count;
+    return count;
+}
+
+/* Builds one record into a fresh view and renders its list row. */
+static void render_one_record_row(lanlan_category_t category, lanlan_subitem_t subitem,
+                                  const char *custom_name, double amount, lanlan_unit_t unit,
+                                  uint16_t duration_minutes, const char *note, char *out,
+                                  size_t out_size) {
+    lanlan_cache_t cache;
+    lanlan_cache_clear(&cache);
+    cache.records[0] = make_record(1, 1760000000, category, subitem);
+    if (custom_name != NULL) {
+        snprintf(cache.records[0].custom_name, sizeof(cache.records[0].custom_name), "%s",
+                 custom_name);
+    }
+    if (amount > 0.0) {
+        lanlan_record_set_amount(&cache.records[0], amount, unit);
+    } else {
+        lanlan_record_set_amount_unknown(&cache.records[0]);
+    }
+    cache.records[0].duration_minutes = duration_minutes;
+    if (note != NULL) {
+        lanlan_record_set_note(&cache.records[0], note);
+    }
+    cache.record_count = 1;
+    assert(lanlan_record_is_valid(&cache.records[0]) == LANLAN_RECORD_OK);
+    assert(lanlan_cache_is_consistent(&cache));
+
+    lanlan_records_view_t view;
+    memset(&view, 0, sizeof(view));
+    view.cache = cache;
+    view.clock_trusted = true;
+    view.utc_offset_min = 480;
+    lanlan_view_record_row(&view, 0, out, out_size);
+}
+
+/* The list row must name the category exactly once and then at most one real
+ * detail, so the records page never shows "喂食 · 喂食120 克". */
+static void test_record_row_text(void) {
+    char row[128];
+    char text[64];
+
+    /* 1760000000 at +08:00 is 16:53 local. */
+    render_one_record_row(LANLAN_CAT_MEAL, LANLAN_SUB_NONE, NULL, 120.0, LANLAN_UNIT_G, 0, NULL,
+                          row, sizeof(row));
+    assert(strcmp(row, "16:53 · 喂食 · 120 克") == 0);
+    /* The category must appear exactly once (counted after the whole
+     * multi-byte token, because a single character of it is not a match). */
+    assert(count_substring(row, LANLAN_STR_CATEGORIES_MEAL) == 1);
+    assert(count_substring(row, LANLAN_STR_SUBITEMS_BATH) == 0);
+
+    /* Unknown amount: no fabricated "0" and no dangling separator. */
+    render_one_record_row(LANLAN_CAT_MEAL, LANLAN_SUB_NONE, NULL, 0.0, LANLAN_UNIT_NONE, 0, NULL,
+                          row, sizeof(row));
+    assert(strcmp(row, "16:53 · 喂食") == 0);
+    assert(strstr(row, LANLAN_STR_QUANTITY_UNKNOWN) == NULL);
+    assert(strstr(row, "0") == NULL);
+
+    assert(count_substring(row, LANLAN_STR_CATEGORIES_MEAL) == 1);
+
+    render_one_record_row(LANLAN_CAT_WATER, LANLAN_SUB_NONE, NULL, 250.0, LANLAN_UNIT_ML, 0, NULL,
+                          row, sizeof(row));
+    assert(strcmp(row, "16:53 · 喝水 · 250 毫升") == 0);
+    assert(count_substring(row, LANLAN_STR_CATEGORIES_WATER) == 1);
+
+    /* A care preset keeps its fixed sub-item label, not the category twice. */
+    render_one_record_row(LANLAN_CAT_CARE, LANLAN_SUB_BATH, NULL, 0.0, LANLAN_UNIT_NONE, 0, NULL,
+                          row, sizeof(row));
+    assert(strcmp(row, "16:53 · 护理 · 洗澡") == 0);
+    assert(count_substring(row, LANLAN_STR_CATEGORIES_CARE) == 1);
+
+    /* A cleaning preset with a custom label shows the label, not the preset. */
+    render_one_record_row(LANLAN_CAT_CLEANING, LANLAN_SUB_EAR, "擦耳朵", 0.0, LANLAN_UNIT_NONE, 0,
+                          NULL, row, sizeof(row));
+    assert(strcmp(row, "16:53 · 清洁 · 擦耳朵") == 0);
+    assert(count_substring(row, LANLAN_STR_CATEGORIES_CLEANING) == 1);
+    /* The preset label is replaced by the custom name, not appended to it. */
+    assert(count_substring(row, LANLAN_STR_SUBITEMS_EAR) == 0);
+
+    /* Walk carries its duration as the detail. */
+    render_one_record_row(LANLAN_CAT_WALK, LANLAN_SUB_NONE, NULL, 0.0, LANLAN_UNIT_NONE, 25, NULL,
+                          row, sizeof(row));
+    assert(strcmp(row, "16:53 · 遛狗 · 25 分钟") == 0);
+    assert(count_substring(row, LANLAN_STR_CATEGORIES_WALK) == 1);
+
+    /* Other is defined by its custom name. */
+    render_one_record_row(LANLAN_CAT_OTHER, LANLAN_SUB_NONE, "剪毛", 0.0, LANLAN_UNIT_NONE, 0, NULL,
+                          row, sizeof(row));
+    assert(strcmp(row, "16:53 · 其他 · 剪毛") == 0);
+    assert(count_substring(row, LANLAN_STR_CATEGORIES_OTHER) == 1);
+
+    /* A note is not repeated on every row; only its explicit cut is hinted. A
+     * remote note is clamped into the bounded preview as it is read, so its
+     * marker is what a list row can show. */
+    lanlan_record_t long_note = make_record(2, 1760000000, LANLAN_CAT_MEAL, LANLAN_SUB_NONE);
+    char remote_note[256];
+    remote_note[0] = '\0';
+    for (int i = 0; i < 40; ++i) strcat(remote_note, "好");
+    assert(strlen(remote_note) == 120);   /* far past the 48-byte device preview */
+    assert(lanlan_record_set_note(&long_note, remote_note));
+    assert(long_note.note_truncated);
+    lanlan_cache_t note_cache;
+    lanlan_cache_clear(&note_cache);
+    note_cache.records[0] = long_note;
+    note_cache.record_count = 1;
+    lanlan_records_view_t note_view;
+    memset(&note_view, 0, sizeof(note_view));
+    note_view.cache = note_cache;
+    note_view.clock_trusted = true;
+    lanlan_view_record_row(&note_view, 0, row, sizeof(row));
+    snprintf(text, sizeof(text), "16:53 · %s · %s", LANLAN_STR_CATEGORIES_MEAL,
+             LANLAN_RECORD_FIXED_LABELS[9]);
+    assert(strcmp(row, text) == 0);
+    assert(count_substring(row, LANLAN_STR_CATEGORIES_MEAL) == 1);
+    assert(lanlan_record_format_local_time(&note_cache.records[0], text, sizeof(text)) > 0);
+    assert(strcmp(text, "16:53") == 0);
+
+    /* A record with a sub-item AND an amount keeps the name as the detail. */
+    render_one_record_row(LANLAN_CAT_CLEANING, LANLAN_SUB_LITTER, NULL, 0.0, LANLAN_UNIT_NONE, 0,
+                          NULL, row, sizeof(row));
+    assert(strcmp(row, "16:53 · 清洁 · 清猫砂") == 0);
+}
+
+/* One reminder per cache slot, with distinct times so a shifted window is
+ * immediately visible in the rendered text. */
+static void build_reminder_window(lanlan_cache_t *cache, int count) {
+    static const char *const times[] = {"07:00", "07:30", "08:00", "08:30",
+                                        "09:00", "09:30", "10:00"};
+    lanlan_cache_clear(cache);
+    for (int i = 0; i < count && i < LANLAN_CACHE_MAX_REMINDERS; ++i) {
+        memset(&cache->reminders[i], 0, sizeof(cache->reminders[i]));
+        cache->reminders[i].id[0] = (uint8_t)(i + 1);
+        cache->reminders[i].id[1] = 0xA0;
+        cache->reminders[i].version = 1;
+        cache->reminders[i].category = LANLAN_CAT_CARE;
+        cache->reminders[i].subitem = (i % 3 == 0) ? LANLAN_SUB_BATH
+                                    : (i % 3 == 1) ? LANLAN_SUB_TEETH
+                                                   : LANLAN_SUB_COMB;
+        cache->reminders[i].enabled = true;
+        cache->reminders[i].last_rung_day = LANLAN_REMINDER_NO_RUNG;
+        strcpy(cache->reminders[i].time_local, times[i % 7]);
+    }
+    cache->reminder_count = (uint32_t)count;
+    assert(lanlan_cache_is_consistent(cache));
+}
+
+static void test_reminder_row_window_and_markers(void) {
+    const int count = 7;
+    lanlan_cache_t cache;
+    build_reminder_window(&cache, count);
+
+    lanlan_records_view_t view;
+    memset(&view, 0, sizeof(view));
+    view.cache = cache;
+    view.clock_trusted = true;
+    /* At 08:10 the reminders at 07:00, 07:30 and 08:00 are due. */
+    lanlan_local_now_t now = {.local_day = 20370, .hour = 8, .minute = 10};
+
+    lanlan_reminder_row_t rows[LANLAN_MODEL_LIST_ROWS];
+    char expected[64];
+
+    /* Offset 0: rows 0..4 map to cache entries 0..4. */
+    view.reminder_offset = 0;
+    lanlan_view_reminder_rows(&view, &now, rows, LANLAN_MODEL_LIST_ROWS);
+    for (int i = 0; i < LANLAN_MODEL_LIST_ROWS; ++i) {
+        const lanlan_reminder_t *entry = &cache.reminders[i];
+        snprintf(expected, sizeof(expected), "%s %s",
+                 i % 3 == 0 ? LANLAN_STR_SUBITEMS_BATH
+                            : (i % 3 == 1 ? LANLAN_STR_SUBITEMS_TEETH
+                                          : LANLAN_STR_SUBITEMS_COMB),
+                 entry->time_local);
+        assert(strcmp(rows[i].row, expected) == 0);
+        /* The row itself never repeats the due badge text. */
+        assert(strstr(rows[i].row, LANLAN_STR_REMINDERS_DUE) == NULL);
+    }
+    /* Due state comes only from the flag: 07:00, 07:30, 08:00 are due; 08:30 and
+     * 09:00 are not. */
+    assert(rows[0].due && rows[1].due && rows[2].due);
+    assert(!rows[3].due && !rows[4].due);
+
+    /* Offset 2: row i must now describe cache entry 2 + i, not entry i. This is
+     * the scrolled case the preview harness caught. */
+    view.reminder_offset = 2;
+    lanlan_view_reminder_rows(&view, &now, rows, LANLAN_MODEL_LIST_ROWS);
+    for (int i = 0; i < LANLAN_MODEL_LIST_ROWS; ++i) {
+        const lanlan_reminder_t *entry = &cache.reminders[2 + i];
+        int slot = 2 + i;
+        snprintf(expected, sizeof(expected), "%s %s",
+                 slot % 3 == 0 ? LANLAN_STR_SUBITEMS_BATH
+                               : (slot % 3 == 1 ? LANLAN_STR_SUBITEMS_TEETH
+                                                : LANLAN_STR_SUBITEMS_COMB),
+                 entry->time_local);
+        assert(strcmp(rows[i].row, expected) == 0);
+        assert(strstr(rows[i].row, entry->time_local) != NULL);
+    }
+    /* Only cache entry 2 (08:00) of this window is due; 08:30 and later are
+     * still ahead, so the window did not shift the due flags either. */
+    assert(strstr(rows[0].row, "08:00") != NULL && rows[0].due);
+    assert(strstr(rows[1].row, "08:30") != NULL && !rows[1].due);
+    assert(!rows[2].due && !rows[3].due && !rows[4].due);
+    /* The last window slot (cache entry 6, 10:00) is still inside the cache. */
+    assert(strstr(rows[4].row, "10:00") != NULL);
+
+    /* A window that runs past the end leaves the trailing rows blank. */
+    view.reminder_offset = 5;
+    lanlan_view_reminder_rows(&view, &now, rows, LANLAN_MODEL_LIST_ROWS);
+    assert(strstr(rows[0].row, "09:30") != NULL);
+    assert(strstr(rows[1].row, "10:00") != NULL);
+    assert(rows[2].row[0] == '\0' && !rows[2].due);
+    assert(rows[3].row[0] == '\0' && rows[4].row[0] == '\0');
+
+    /* A disabled reminder is marked exactly once, in the row. The view owns a
+     * copy of the cache, so the changed reminder must be reloaded into it. */
+    cache.reminders[3].enabled = false;
+    view.cache = cache;
+    view.reminder_offset = 3;
+    lanlan_view_reminder_rows(&view, &now, rows, LANLAN_MODEL_LIST_ROWS);
+    /* Cache entry 3 is 洗澡 (slot 3 % 3 == 0) at 08:30, now disabled. */
+    assert(strcmp(rows[0].row, LANLAN_STR_SUBITEMS_BATH " 08:30 · "
+                  LANLAN_STR_REMINDERS_DISABLED) == 0);
+    assert(!rows[0].due);
+    assert(strstr(rows[0].row, LANLAN_STR_REMINDERS_DUE) == NULL);
+    assert(strstr(rows[0].row, LANLAN_STR_REMINDERS_SOUND_OFF) == NULL);
+    /* The next row is a different reminder and carries no disabled marker. */
+    assert(strstr(rows[1].row, LANLAN_STR_REMINDERS_DISABLED) == NULL);
+
+    /* An untrusted clock suppresses the due flag but still renders the rows. */
+    view.reminder_offset = 0;
+    view.clock_trusted = false;
+    lanlan_view_reminder_rows(&view, &now, rows, LANLAN_MODEL_LIST_ROWS);
+    assert(!rows[0].due && !rows[1].due && !rows[2].due);
+    assert(rows[0].row[0] != '\0');
+
+    /* Out-of-range and NULL inputs are harmless. */
+    view.reminder_offset = 0;
+    lanlan_view_reminder_rows(&view, &now, NULL, 0);
+    lanlan_view_reminder_rows(NULL, &now, rows, LANLAN_MODEL_LIST_ROWS);
+    assert(rows[0].row[0] == '\0');
+    lanlan_view_reminder_rows(&view, &now, rows, 0);
+
+    /* A reminder with no configured time is not due and shows the placeholder. */
+    view.cache.reminders[0].time_local[0] = '\0';
+    lanlan_view_reminder_rows(&view, &now, rows, LANLAN_MODEL_LIST_ROWS);
+    assert(!rows[0].due);
+    assert(strstr(rows[0].row, "--:--") != NULL);
+}
+
 static void test_view_model_titles_and_rows(void) {
     lanlan_model_init(&s_model);
     load_records(&s_model, 3);
@@ -398,35 +651,7 @@ static void test_view_model_titles_and_rows(void) {
            == 0);
     assert(lanlan_view_character_state_label(LANLAN_CHARACTER_COUNT)[0] == '\0');
 
-    /* Reminder rows carry the configured time and the due state. */
-    lanlan_reminder_row_t rows[LANLAN_MODEL_LIST_ROWS];
-    lanlan_local_now_t now = {.local_day = 20370, .hour = 8, .minute = 0};
-    lanlan_cache_t with_reminder;
-    lanlan_cache_clear(&with_reminder);
-    memset(&with_reminder.reminders[0], 0, sizeof(with_reminder.reminders[0]));
-    with_reminder.reminders[0].id[0] = 1;
-    with_reminder.reminders[0].version = 1;
-    with_reminder.reminders[0].category = LANLAN_CAT_CARE;
-    with_reminder.reminders[0].subitem = LANLAN_SUB_TEETH;
-    with_reminder.reminders[0].enabled = true;
-    with_reminder.reminders[0].last_rung_day = LANLAN_REMINDER_NO_RUNG;
-    strcpy(with_reminder.reminders[0].time_local, "07:40");
-    with_reminder.reminder_count = 1;
-    lanlan_records_view_t reminder_view = {.cache = with_reminder, .clock_trusted = true};
-    lanlan_view_reminder_rows(&reminder_view, &now, rows, LANLAN_MODEL_LIST_ROWS);
-    assert(rows[0].due);
-    assert(strstr(rows[0].row, "07:40") != NULL);
-    assert(strstr(rows[0].row, LANLAN_STR_REMINDERS_DUE) != NULL);
-    assert(strstr(rows[0].row, LANLAN_STR_SUBITEMS_TEETH) != NULL);
-    /* An untrusted clock never shows a due row. */
-    reminder_view.clock_trusted = false;
-    lanlan_view_reminder_rows(&reminder_view, &now, rows, LANLAN_MODEL_LIST_ROWS);
-    assert(!rows[0].due);
-    assert(strstr(rows[0].row, LANLAN_STR_REMINDERS_SOUND_OFF) != NULL);
-    /* Rows beyond the cache are blank rather than stale. */
-    assert(rows[1].row[0] == '\0' && !rows[1].due);
-    lanlan_view_reminder_rows(NULL, &now, rows, LANLAN_MODEL_LIST_ROWS);
-    lanlan_view_reminder_rows(&reminder_view, &now, NULL, 0);
+    /* Reminder rows and record rows have their own focused tests below. */
 
     /* Empty states differ with the clock, and a record row is never empty. */
     lanlan_records_view_t empty_view;
@@ -543,7 +768,9 @@ int main(void) {
     test_wake_only_first_gesture();
     test_companion_never_emits_a_record_action();
     test_view_model_titles_and_rows();
+    test_record_row_text();
+    test_reminder_row_window_and_markers();
     test_sync_status_text_with_age();
-    puts("Lanlan model: PASS (navigation bounds, wake-only gesture, companion invariant, view model)");
+    puts("Lanlan model: PASS (navigation bounds, wake-only gesture, companion invariant, row text, reminder window, view model)");
     return 0;
 }

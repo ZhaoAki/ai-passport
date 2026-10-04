@@ -6,6 +6,7 @@ idf_component_register(
     SRCS
         "main.c"
         "lanlan_cache.c"
+        "lanlan_caregiver.c"
         "lanlan_model.c"
         "lanlan_record.c"
         "lanlan_reminder.c"

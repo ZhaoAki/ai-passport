@@ -53,6 +53,10 @@ run_static_checks() {
         -o "${test_dir}/test_lanlan_reminder"
     "${test_dir}/test_lanlan_reminder"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_lanlan_caregiver.c main/lanlan_caregiver.c \
+        -o "${test_dir}/test_lanlan_caregiver"
+    "${test_dir}/test_lanlan_caregiver"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_lanlan_model.c main/lanlan_model.c main/lanlan_cache.c main/lanlan_record.c \
         main/lanlan_reminder.c main/lanlan_time.c main/lanlan_strings.c \
         -o "${test_dir}/test_lanlan_model"

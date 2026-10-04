@@ -63,6 +63,9 @@ static const char *TAG = "lanlan_sync";
 #define LANLAN_SYNC_AUTH_MAX 160
 #define LANLAN_SYNC_PAGE_LIMIT 8
 #define LANLAN_SYNC_MAX_PAGES 12
+/* The family has two caregivers; a malformed list cannot make the worker buffer
+ * grow, so the entries that are mapped are bounded. */
+#define LANLAN_SYNC_MEMBER_LIMIT 4
 
 /* The project's sdkconfig keeps CONFIG_LWIP_SNTP_MAX_SERVERS at its default of
  * one, so a single pool server is configured. SNTP is an optimisation: the
@@ -799,15 +802,37 @@ static void copy_text_field(const char *source, char *destination, size_t destin
 
 /* The record struct stores a caregiver index, not an id, and the validator
  * rejects anything above 1. The service sends user ids, so the glue layer owns
- * a two-slot table; the hook must always answer 0 or 1. */
+ * the id -> slot directory; the hook must always answer 0 or 1. */
 static uint8_t caregiver_index(const cJSON *object, const char *name) {
     const char *text = NULL;
-    if (!json_string(object, name, &text) || !text) return 0;
-    uint8_t id[LANLAN_ID_BYTES];
-    if (!parse_uuid(text, id)) return 0;
-    bool is_new = false;
-    uint8_t index = s_hooks.caregiver ? s_hooks.caregiver(id, &is_new, s_hooks.user) : 0;
+    if (!json_string(object, name, &text) || !text || text[0] == '\0') return 0;
+    if (!s_hooks.caregiver) return 0;
+    uint8_t index = s_hooks.caregiver(text, s_hooks.user);
     return index < 2 ? index : 0;
+}
+
+/* Applies the optional `members` array of an already parsed page. The field is
+ * additive, so an absent, empty or malformed list is "no update" rather than a
+ * sync error, unknown fields inside an entry are ignored, and an entry without a
+ * usable id is skipped. Called before any record of the page is mapped. */
+static void apply_members(const cJSON *root) {
+    if (!s_hooks.members || !root) return;
+    const cJSON *members = cJSON_GetObjectItemCaseSensitive(root, "members");
+    if (!cJSON_IsArray(members)) return;
+    lanlan_caregiver_member_t list[LANLAN_SYNC_MEMBER_LIMIT];
+    int count = 0;
+    const cJSON *item = NULL;
+    cJSON_ArrayForEach(item, members) {
+        if (count >= LANLAN_SYNC_MEMBER_LIMIT) break;
+        const char *id = NULL;
+        if (!json_string(item, "id", &id) || !id || id[0] == '\0') continue;
+        const char *display_name = NULL;
+        (void)json_string(item, "display_name", &display_name);
+        list[count].id = id;
+        list[count].display_name = display_name;
+        ++count;
+    }
+    if (count > 0) s_hooks.members(list, count, s_hooks.user);
 }
 
 static bool parse_record(const cJSON *item, int16_t fallback_offset_min, lanlan_record_t *record) {
@@ -917,9 +942,12 @@ static bool parse_reminder(const cJSON *item, lanlan_reminder_t *reminder) {
     return true;
 }
 
-/* Parses one /sync/changes page into `batch`, which already carries the
- * envelope's clock fields. `has_more` and the cursor come from the envelope;
- * the batch arrays stay inside their capacity bounds. */
+/* Parses one sync page into `batch`, which already carries the envelope's clock
+ * fields. `cursor` and `records` are mandatory on both endpoints; `reminders`
+ * and `revoked` are optional, because a /sync/snapshot page carries records and
+ * members but has no revocation list, and only its first page carries the
+ * reminder array. The caregiver directory in `members` is applied before any
+ * record on the page is mapped to a slot. */
 static bool parse_changes(const char *body, size_t length, lanlan_sync_batch_t *batch,
                           bool *has_more) {
     cJSON *root = cJSON_ParseWithLength(body, length);
@@ -933,18 +961,15 @@ static bool parse_changes(const char *body, size_t length, lanlan_sync_batch_t *
     do {
         const cJSON *cursor = cJSON_GetObjectItemCaseSensitive(root, "cursor");
         const cJSON *records = cJSON_GetObjectItemCaseSensitive(root, "records");
-        const cJSON *reminders = cJSON_GetObjectItemCaseSensitive(root, "reminders");
-        const cJSON *revoked = cJSON_GetObjectItemCaseSensitive(root, "revoked");
-        if (!cJSON_IsNumber(cursor) || !cJSON_IsArray(records) || !cJSON_IsArray(reminders)
-            || !cJSON_IsArray(revoked)) {
-            break;
-        }
+        if (!cJSON_IsNumber(cursor) || !cJSON_IsArray(records)) break;
         double cursor_value = cJSON_GetNumberValue(cursor);
         if (cursor_value < 0 || cursor_value > (double)UINT32_MAX) break;
         batch->cursor = (uint32_t)cursor_value;
 
         const cJSON *has_more_item = cJSON_GetObjectItemCaseSensitive(root, "has_more");
         *has_more = cJSON_IsTrue(has_more_item);
+
+        apply_members(root);
 
         int32_t count = 0;
         const cJSON *item = NULL;
@@ -959,33 +984,39 @@ static bool parse_changes(const char *body, size_t length, lanlan_sync_batch_t *
         if (count < 0) break;
         batch->record_count = count;
 
-        count = 0;
-        cJSON_ArrayForEach(item, reminders) {
-            if (count >= (int32_t)LANLAN_CACHE_REMINDER_CAPACITY) break;
-            if (!parse_reminder(item, &batch->reminders[count])) {
-                count = -1;
-                break;
+        const cJSON *reminders = cJSON_GetObjectItemCaseSensitive(root, "reminders");
+        if (cJSON_IsArray(reminders)) {
+            count = 0;
+            cJSON_ArrayForEach(item, reminders) {
+                if (count >= (int32_t)LANLAN_CACHE_REMINDER_CAPACITY) break;
+                if (!parse_reminder(item, &batch->reminders[count])) {
+                    count = -1;
+                    break;
+                }
+                ++count;
             }
-            ++count;
+            if (count < 0) break;
+            batch->reminder_count = count;
         }
-        if (count < 0) break;
-        batch->reminder_count = count;
 
-        count = 0;
-        cJSON_ArrayForEach(item, revoked) {
-            if (count >= (int32_t)LANLAN_CACHE_RECORD_CAPACITY) break;
-            if (!cJSON_IsString(item) || !item->valuestring) {
-                count = -1;
-                break;
+        const cJSON *revoked = cJSON_GetObjectItemCaseSensitive(root, "revoked");
+        if (cJSON_IsArray(revoked)) {
+            count = 0;
+            cJSON_ArrayForEach(item, revoked) {
+                if (count >= (int32_t)LANLAN_CACHE_RECORD_CAPACITY) break;
+                if (!cJSON_IsString(item) || !item->valuestring) {
+                    count = -1;
+                    break;
+                }
+                if (!parse_uuid(item->valuestring, batch->revoked[count])) {
+                    count = -1;
+                    break;
+                }
+                ++count;
             }
-            if (!parse_uuid(item->valuestring, batch->revoked[count])) {
-                count = -1;
-                break;
-            }
-            ++count;
+            if (count < 0) break;
+            batch->revoked_count = count;
         }
-        if (count < 0) break;
-        batch->revoked_count = count;
         ok = true;
     } while (false);
     cJSON_Delete(root);
