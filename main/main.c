@@ -1,242 +1,208 @@
-// main/main.c —— FoloToy AI Passport BSP 驱动参考示例:初始化 + 菜单 + 按键分发。
-//
-// 按键语义(全局统一):
-//   上/下 短按   菜单中=移动选中项;演示页中=该页自定义
-//   确定  短按   菜单中=进入选中项;演示页中=该页自定义
-//   确定  长按   演示页中=返回菜单(由本文件统一拦截)
-#include "bsp_i2c.h"
+// Offline Korean application. One owner serializes model, NVS, audio and rendering.
 #include "bsp_display.h"
 #include "bsp_button.h"
 #include "bsp_audio.h"
 #include "bsp_battery.h"
-#include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
-#include "demo.h"
-#include "demo_navigation.h"
-#include "ui_pixel.h"
-#include "lvgl.h"
+#include "korean_model.h"
+#include "korean_ui.h"
+#include "korean_audio_data.h"
 #include "esp_log.h"
-#include "esp_sleep.h"
+#include "esp_random.h"
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include <stdatomic.h>
+#include <string.h>
 
-static const char *TAG = "main";
+extern const uint8_t audio_start[] asm("_binary_korean_mms_16k_pcm_start");
+extern const uint8_t audio_end[] asm("_binary_korean_mms_16k_pcm_end");
+static const char *TAG = "korean";
+static ko_model_t s_model;
+static QueueHandle_t s_queue;
+static lv_obj_t *s_screen;
+static nvs_handle_t s_nvs;
+static bool s_storage_open, s_storage_ok, s_audio_ok, s_buttons_ok;
+static bool s_audio_awake;
+static atomic_bool s_ready;
+static uint32_t s_pcm_offset, s_pcm_remaining;
+static int s_battery = -1;
+static int64_t s_last_audio_write;
+typedef struct { bsp_btn_t key; bsp_btn_ev_t event; } input_t;
 
-static const demo_entry_t DEMOS[] = {
-    { .name = "Display", .enter = demo_display_enter, .exit = demo_display_exit,
-      .key = demo_display_key },
-    { .name = "Button", .enter = demo_button_enter, .exit = demo_button_exit,
-      .key = demo_button_key },
-    { .name = "Audio", .enter = demo_audio_enter, .exit = demo_audio_exit,
-      .key = demo_audio_key, .start = demo_audio_start, .stop = demo_audio_stop },
-    { .name = "Battery", .enter = demo_battery_enter, .exit = demo_battery_exit,
-      .key = demo_battery_key },
-    { .name = "Wi-Fi", .enter = demo_wifi_enter, .exit = demo_wifi_exit,
-      .key = demo_wifi_key, .start = demo_wifi_start, .stop = demo_wifi_stop },
-    { .name = "BLE", .enter = demo_ble_enter, .exit = demo_ble_exit,
-      .key = demo_ble_key, .start = demo_ble_start, .stop = demo_ble_stop },
-    { .name = "Low Power", .enter = demo_low_power_enter, .exit = demo_low_power_exit,
-      .key = demo_low_power_key, .start = demo_low_power_start, .stop = demo_low_power_stop },
-};
-#define DEMO_COUNT (sizeof(DEMOS) / sizeof(DEMOS[0]))
-#define INPUT_QUEUE_DEPTH 8
-
-typedef struct {
-    bsp_btn_t btn;
-    bsp_btn_ev_t event;
-} input_event_t;
-
-// 各外设初始化结果:失败的项在菜单里标 [FAIL] 且不允许进入。
-static bool s_ok[DEMO_COUNT];
-
-static lv_obj_t *s_menu_scr;
-static lv_obj_t *s_cards[DEMO_COUNT];
-static lv_obj_t *s_rows[DEMO_COUNT];
-static lv_obj_t *s_mascot;
-static demo_navigation_t s_navigation;
-static QueueHandle_t s_input_queue;
-static TaskHandle_t s_input_task;
-static volatile bool s_input_ready;
-
-static void menu_refresh(void) {
-    for (size_t i = 0; i < DEMO_COUNT; i++) {
-        lv_label_set_text_fmt(s_rows[i], "%s%s",
-                              DEMOS[i].name,
-                              s_ok[i] ? "" : "  [FAIL]");
-        ui_pixel_set_selected(s_cards[i], i == s_navigation.selected, s_ok[i]);
-        lv_obj_set_style_text_color(s_rows[i],
-            s_ok[i] ? lv_color_hex(UI_INK) : lv_color_hex(0x7A2020), 0);
-    }
+static void on_key(bsp_btn_t key, bsp_btn_ev_t event, void *user) {
+    (void)user;
+    if (!atomic_load(&s_ready)) return;
+    if (event != BSP_BTN_CLICK && event != BSP_BTN_LONG) return;
+    const input_t input = {key, event};
+    (void)xQueueSend(s_queue, &input, 0);
 }
-
-static void menu_build(void) {
-    s_menu_scr = ui_pixel_screen_create("FoloToy");
-
-    for (size_t i = 0; i < DEMO_COUNT; i++) {
-        int x = 11 + (int)(i % 2) * 112;
-        int y = 52 + (int)(i / 2) * 47;
-        s_cards[i] = ui_pixel_panel_create(s_menu_scr, x, y, 102, 40, UI_PAPER);
-        s_rows[i] = lv_label_create(s_cards[i]);
-        lv_obj_set_style_text_font(s_rows[i], &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_align(s_rows[i], LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_center(s_rows[i]);
-    }
-
-    s_mascot = ui_pixel_mascot_create(s_menu_scr, 101, 242);
-
-    menu_refresh();
-    lv_screen_load(s_menu_scr);
-}
-
-static void enter_menu(void) {
-    menu_build();
-}
-
-static demo_nav_input_t navigation_input(bsp_btn_t btn, bsp_btn_ev_t event) {
-    if (event == BSP_BTN_LONG && btn == BSP_BTN_OK) return DEMO_NAV_INPUT_OK_LONG;
-    if (event != BSP_BTN_CLICK) return DEMO_NAV_INPUT_OTHER;
-    if (btn == BSP_BTN_UP) return DEMO_NAV_INPUT_UP_CLICK;
-    if (btn == BSP_BTN_DOWN) return DEMO_NAV_INPUT_DOWN_CLICK;
-    if (btn == BSP_BTN_OK) return DEMO_NAV_INPUT_OK_CLICK;
-    return DEMO_NAV_INPUT_OTHER;
-}
-
-static void process_input(const input_event_t *input) {
-    demo_nav_input_t nav_input = navigation_input(input->btn, input->event);
-
-    if (s_navigation.active >= 0) {
-        demo_nav_result_t result = demo_navigation_handle(&s_navigation, nav_input, true);
-        const demo_entry_t *demo = &DEMOS[result.index];
-        if (result.action == DEMO_NAV_ACTION_EXIT) {
-            esp_err_t e = demo->stop ? demo->stop() : ESP_OK;
-            if (e != ESP_OK) {
-                ESP_LOGE(TAG, "%s 页面停止失败: %s", demo->name, esp_err_to_name(e));
-                return;
-            }
-            if (!bsp_lvgl_lock(500)) return;
-            demo->exit();
-            demo_navigation_complete_exit(&s_navigation);
-            enter_menu();
-            bsp_lvgl_unlock();
-        } else if (result.action == DEMO_NAV_ACTION_FORWARD) {
-            demo->key(input->btn, input->event);
-        }
-        return;
-    }
-
-    if (nav_input == DEMO_NAV_INPUT_OTHER || nav_input == DEMO_NAV_INPUT_OK_LONG) return;
-    if (!bsp_lvgl_lock(500)) return;
-    demo_nav_result_t result = demo_navigation_handle(
-        &s_navigation, nav_input, s_ok[s_navigation.selected]);
-    if (result.action == DEMO_NAV_ACTION_REFRESH) {
-        menu_refresh();
-        ui_pixel_mascot_jump(s_mascot);
-    } else if (result.action == DEMO_NAV_ACTION_ENTER) {
-        const demo_entry_t *demo = &DEMOS[result.index];
-        ui_pixel_mascot_jump(s_mascot);
-        lv_obj_delete(s_menu_scr);
-        s_menu_scr = NULL;
-        s_mascot = NULL;
-        demo->enter();
-        bsp_lvgl_unlock();
-
-        esp_err_t e = demo->start ? demo->start() : ESP_OK;
-        if (e != ESP_OK) {
-            ESP_LOGE(TAG, "%s 页面启动失败: %s", demo->name, esp_err_to_name(e));
-        }
-        return;
-    }
+static void render(void) {
+    if (!bsp_lvgl_lock(1000)) return;
+    ko_ui_render(s_screen, &s_model, s_battery, s_audio_ok, s_storage_ok, s_buttons_ok);
     bsp_lvgl_unlock();
 }
-
+static void load_progress(void) {
+    // Never erase unrelated NVS when initialization or decoding fails.
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_OK) err = nvs_open("korean_course", NVS_READWRITE, &s_nvs);
+    if (err != ESP_OK) { ESP_LOGE(TAG, "Storage unavailable: %s", esp_err_to_name(err)); return; }
+    s_storage_open = true;
+    s_storage_ok = true;
+    uint8_t data[KO_SAVE_BYTES];
+    size_t size = sizeof(data);
+    err = nvs_get_blob(s_nvs, "progress_v1", data, &size);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return;
+    if (err != ESP_OK || !ko_decode(&s_model.progress, data, size)) {
+        // Retain invalid/unknown records for inspection instead of overwriting them.
+        s_storage_ok = false;
+        s_storage_open = false;
+        nvs_close(s_nvs);
+        ESP_LOGE(TAG, "Progress cannot be read; session will use RAM only");
+    }
+}
+static void save_progress(void) {
+    if (!s_storage_open) return;
+    uint8_t data[KO_SAVE_BYTES];
+    ko_encode(&s_model.progress, data);
+    esp_err_t err = nvs_set_blob(s_nvs, "progress_v1", data, sizeof(data));
+    if (err == ESP_OK) err = nvs_commit(s_nvs);
+    s_storage_ok = err == ESP_OK;
+    if (err != ESP_OK) ESP_LOGE(TAG, "Save failed: %s", esp_err_to_name(err));
+}
+static void stop_audio(void) { s_pcm_remaining = 0; }
+static void audio_failed(void) {
+    stop_audio();
+    s_audio_ok = false;
+    if (s_model.page == KO_QUIZ && s_model.listening && !s_model.feedback)
+        s_model.page = KO_AUDIO_ERROR;
+}
+static void play(unsigned id) {
+    if (!s_audio_ok || id >= KO_COUNT) return;
+    const ko_audio_clip_t *clip = &ko_audio_clips[id];
+    size_t size = (size_t)(audio_end - audio_start);
+    if (clip->offset > size || clip->bytes > size - clip->offset || clip->bytes % 2) {
+        audio_failed();
+        ESP_LOGE(TAG, "Invalid audio index %u", id);
+        return;
+    }
+    esp_err_t err = s_audio_awake ? ESP_OK : bsp_audio_wake();
+    if (err == ESP_OK) err = bsp_audio_set_format(16000, 16, 1);
+    if (err != ESP_OK) { audio_failed(); ESP_LOGE(TAG, "Audio start: %s", esp_err_to_name(err)); return; }
+    s_audio_awake = true;
+    s_pcm_offset = clip->offset;
+    s_pcm_remaining = clip->bytes;
+}
+static void feed_audio(void) {
+    // Only 512 bytes of aligned PCM on the task stack; no whole-clip heap allocation.
+    int16_t pcm[256];
+    size_t bytes = s_pcm_remaining < sizeof(pcm) ? s_pcm_remaining : sizeof(pcm);
+    memcpy(pcm, audio_start + s_pcm_offset, bytes);
+    esp_err_t err = bsp_audio_write(pcm, bytes);
+    if (err != ESP_OK) {
+        audio_failed();
+        ESP_LOGE(TAG, "Audio write: %s", esp_err_to_name(err));
+        render();
+        return;
+    }
+    s_last_audio_write = esp_timer_get_time();
+    s_pcm_offset += bytes;
+    s_pcm_remaining -= bytes;
+    // Some driver writes complete immediately while DMA has room; yield to LVGL/buttons.
+    vTaskDelay(pdMS_TO_TICKS(1));
+}
 static void input_task(void *arg) {
     (void)arg;
-    input_event_t input;
+    int64_t last_input = esp_timer_get_time(), last_battery = last_input;
+    bool dimmed = false, dark = false;
     for (;;) {
-        if (xQueueReceive(s_input_queue, &input, portMAX_DELAY) == pdTRUE) {
-            process_input(&input);
+        input_t input;
+        TickType_t wait = s_pcm_remaining ? 0 : pdMS_TO_TICKS(100);
+        if (xQueueReceive(s_queue, &input, wait) == pdTRUE) {
+            last_input = esp_timer_get_time();
+            if (dimmed || dark) bsp_display_backlight(65);
+            dimmed = false;
+            if (dark) { dark = false; continue; } // First key only wakes the screen.
+            if (input.event == BSP_BTN_LONG && input.key == BSP_BTN_DOWN) {
+                if (s_model.page == KO_CARDS) play(s_model.card);
+                if (s_model.page == KO_QUIZ) play(s_model.questions[s_model.round_pos]);
+                render();
+                continue;
+            }
+            if (input.event == BSP_BTN_LONG && input.key != BSP_BTN_OK) continue;
+            ko_key_t key = input.event == BSP_BTN_LONG ? KO_BACK :
+                input.key == BSP_BTN_UP ? KO_UP : input.key == BSP_BTN_DOWN ? KO_DOWN : KO_OK;
+            if (!s_audio_ok && s_model.page == KO_HOME && s_model.menu == 3 && key == KO_OK) {
+                s_model.page = KO_AUDIO_ERROR;
+                render();
+                continue;
+            }
+            stop_audio();
+            ko_page_t old_page = s_model.page;
+            unsigned old_pos = s_model.round_pos;
+            bool dirty = ko_handle(&s_model, key);
+            // No PCM writes run concurrently with NVS commits or codec suspend.
+            if (dirty) {
+                if (s_audio_awake) {
+                    esp_err_t err = bsp_audio_sleep();
+                    s_audio_awake = false;
+                    if (err != ESP_OK) s_audio_ok = false;
+                }
+                save_progress();
+            }
+            if (s_model.page == KO_QUIZ && s_model.listening && !s_model.feedback &&
+                (old_page != KO_QUIZ || old_pos != s_model.round_pos))
+                play(s_model.questions[s_model.round_pos]);
+            render();
+        }
+        if (s_pcm_remaining) feed_audio();
+        int64_t now = esp_timer_get_time();
+        if (!s_pcm_remaining && s_audio_awake && now - last_input > 2000000 && now - s_last_audio_write > 200000) {
+            // DMA is finished long before this idle boundary.
+            esp_err_t err = bsp_audio_sleep();
+            s_audio_awake = false;
+            if (err != ESP_OK) { s_audio_ok = false; ESP_LOGE(TAG, "Audio suspend: %s", esp_err_to_name(err)); render(); }
+        }
+        if (!dimmed && now - last_input > 30000000) { bsp_display_backlight(15); dimmed = true; }
+        if (!dark && now - last_input > 90000000) { bsp_display_backlight(0); dark = true; }
+        if (!s_pcm_remaining && now - last_battery > 30000000) {
+            last_battery = now;
+            s_battery = bsp_battery_soc();
+            if (!dark) render();
         }
     }
 }
-
-static esp_err_t input_dispatch_init(void) {
-    s_input_queue = xQueueCreate(INPUT_QUEUE_DEPTH, sizeof(input_event_t));
-    if (!s_input_queue) return ESP_ERR_NO_MEM;
-    if (xTaskCreate(input_task, "demo_input", 4096, NULL, 5, &s_input_task) != pdPASS) {
-        vQueueDelete(s_input_queue);
-        s_input_queue = NULL;
-        return ESP_ERR_NO_MEM;
-    }
-    return ESP_OK;
-}
-
-static void input_dispatch_deinit(void) {
-    s_input_ready = false;
-    if (s_input_task) {
-        vTaskDelete(s_input_task);
-        s_input_task = NULL;
-    }
-    if (s_input_queue) {
-        vQueueDelete(s_input_queue);
-        s_input_queue = NULL;
-    }
-}
-
-// button callbacks run on the shared esp_timer task; enqueue only and return immediately.
-static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
-    (void)user;
-    if (!s_input_ready || !s_input_queue) return;
-    const input_event_t input = { .btn = btn, .event = ev };
-    (void)xQueueSend(s_input_queue, &input, 0);
-}
-
 void app_main(void) {
-    ESP_LOGI(TAG, "FoloToy AI Passport BSP demo 启动");
-    esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
-    if (wakeup != ESP_SLEEP_WAKEUP_UNDEFINED) {
-        ESP_LOGI(TAG, "休眠唤醒原因: %d", wakeup);
-    }
-
-    bsp_i2c_init();
-    bsp_i2c_scan();
-
-    // 屏幕是本 demo 的 UI 载体,失败就没有菜单可言 —— 打清楚日志后退出,
-    // 不做"串口菜单"降级(那会让本文件复杂一倍,违背参考示例的初衷)。
+    ko_init(&s_model, esp_random());
+    load_progress();
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
-        ESP_LOGE(TAG, "显示/LVGL 初始化失败,demo 无法继续。"
-                      "检查 SPI 接线(MOSI=%d SCLK=%d CS=%d DC=%d BL=%d)",
-                 BSP_LCD_MOSI, BSP_LCD_SCLK, BSP_LCD_CS, BSP_LCD_DC, BSP_LCD_BL);
+        ESP_LOGE(TAG, "Display initialization failed");
         return;
     }
-    bsp_display_backlight(100);
-
-    demo_navigation_init(&s_navigation, DEMO_COUNT);
-
-    // 其余外设单项失败不阻塞:菜单里标 [FAIL],其他项照常可测。
-    s_ok[0] = true;                                   // Display 已确认可用
-    esp_err_t input_err = input_dispatch_init();
-    esp_err_t button_err = input_err == ESP_OK
-                         ? bsp_button_init(on_key, NULL)
-                         : ESP_ERR_INVALID_STATE;
-    s_ok[1] = input_err == ESP_OK && button_err == ESP_OK;
-    if (input_err != ESP_OK) {
-        ESP_LOGE(TAG, "按键事件任务创建失败: %s", esp_err_to_name(input_err));
-    } else if (button_err != ESP_OK) {
-        ESP_LOGE(TAG, "按键初始化失败: %s", esp_err_to_name(button_err));
-        input_dispatch_deinit();
+    s_audio_ok = bsp_audio_init() == ESP_OK;
+    s_audio_awake = s_audio_ok;
+    if (s_audio_ok) bsp_audio_set_volume(65);
+    if (bsp_battery_init() == ESP_OK) s_battery = bsp_battery_soc();
+    s_queue = xQueueCreate(12, sizeof(input_t));
+    if (!s_queue) { ESP_LOGE(TAG, "Input queue allocation failed"); return; }
+    s_buttons_ok = bsp_button_init(on_key, NULL) == ESP_OK;
+    if (!bsp_lvgl_lock(1000)) return;
+    s_screen = lv_obj_create(NULL);
+    ko_ui_render(s_screen, &s_model, s_battery, s_audio_ok, s_storage_ok, s_buttons_ok);
+    lv_screen_load(s_screen);
+    bsp_lvgl_unlock();
+    bsp_display_backlight(65);
+    if (xTaskCreate(input_task, "korean_app", 6144, NULL, 5, NULL) != pdPASS) {
+        s_buttons_ok = false;
+        render();
+        ESP_LOGE(TAG, "Input task allocation failed");
+        return;
     }
-    s_ok[2] = (bsp_audio_init() == ESP_OK);
-    s_ok[3] = (bsp_battery_init() == ESP_OK);
-    s_ok[4] = true;                                    // 页面内按需初始化并显示错误
-    s_ok[5] = true;
-    s_ok[6] = true;
-
-    if (bsp_lvgl_lock(1000)) {
-        enter_menu();
-        bsp_lvgl_unlock();
-        s_input_ready = true;
-    }
-
-    ESP_LOGI(TAG, "就绪:Display=%d Button=%d Audio=%d Battery=%d",
-             s_ok[0], s_ok[1], s_ok[2], s_ok[3]);
+    atomic_store(&s_ready, true);
+    ESP_LOGI(TAG, "Korean course ready; free heap=%u largest block=%u",
+        (unsigned)esp_get_free_heap_size(),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 }

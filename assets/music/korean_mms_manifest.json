@@ -1,0 +1,312 @@
+{
+  "voice": "facebook/mms-tts-kor",
+  "revision": "1b6491366d2ed6ea8e4e735607155d9f0110df29",
+  "seed_base": 20261002,
+  "license": "CC-BY-NC-4.0",
+  "transformers": "4.57.1",
+  "torch": "2.9.1",
+  "format": "PCM s16le mono 16000 Hz",
+  "sha256": "c95ace094d5882fa229d12a79c1adf4913ad0b170194855c097f121d5a12d1b4",
+  "clips": [
+    {
+      "text": "아",
+      "offset": 0,
+      "bytes": 8276
+    },
+    {
+      "text": "야",
+      "offset": 8276,
+      "bytes": 13952
+    },
+    {
+      "text": "어",
+      "offset": 22228,
+      "bytes": 14464
+    },
+    {
+      "text": "여",
+      "offset": 36692,
+      "bytes": 17024
+    },
+    {
+      "text": "오",
+      "offset": 53716,
+      "bytes": 13440
+    },
+    {
+      "text": "요",
+      "offset": 67156,
+      "bytes": 12416
+    },
+    {
+      "text": "우",
+      "offset": 79572,
+      "bytes": 11904
+    },
+    {
+      "text": "유",
+      "offset": 91476,
+      "bytes": 16000
+    },
+    {
+      "text": "으",
+      "offset": 107476,
+      "bytes": 12928
+    },
+    {
+      "text": "이",
+      "offset": 120404,
+      "bytes": 10390
+    },
+    {
+      "text": "기역",
+      "offset": 130794,
+      "bytes": 16000
+    },
+    {
+      "text": "니은",
+      "offset": 146794,
+      "bytes": 16512
+    },
+    {
+      "text": "디귿",
+      "offset": 163306,
+      "bytes": 19810
+    },
+    {
+      "text": "리을",
+      "offset": 183116,
+      "bytes": 14464
+    },
+    {
+      "text": "미음",
+      "offset": 197580,
+      "bytes": 22412
+    },
+    {
+      "text": "비읍",
+      "offset": 219992,
+      "bytes": 20178
+    },
+    {
+      "text": "시옷",
+      "offset": 240170,
+      "bytes": 18048
+    },
+    {
+      "text": "이응",
+      "offset": 258218,
+      "bytes": 23112
+    },
+    {
+      "text": "지읒",
+      "offset": 281330,
+      "bytes": 20608
+    },
+    {
+      "text": "치읓",
+      "offset": 301938,
+      "bytes": 13440
+    },
+    {
+      "text": "키읔",
+      "offset": 315378,
+      "bytes": 22842
+    },
+    {
+      "text": "티읕",
+      "offset": 338220,
+      "bytes": 16000
+    },
+    {
+      "text": "피읖",
+      "offset": 354220,
+      "bytes": 19728
+    },
+    {
+      "text": "히읗",
+      "offset": 373948,
+      "bytes": 18560
+    },
+    {
+      "text": "사과",
+      "offset": 392508,
+      "bytes": 21120
+    },
+    {
+      "text": "바나나",
+      "offset": 413628,
+      "bytes": 18048
+    },
+    {
+      "text": "포도",
+      "offset": 431676,
+      "bytes": 24192
+    },
+    {
+      "text": "우유",
+      "offset": 455868,
+      "bytes": 20096
+    },
+    {
+      "text": "물",
+      "offset": 475964,
+      "bytes": 16000
+    },
+    {
+      "text": "빵",
+      "offset": 491964,
+      "bytes": 20900
+    },
+    {
+      "text": "밥",
+      "offset": 512864,
+      "bytes": 18560
+    },
+    {
+      "text": "커피",
+      "offset": 531424,
+      "bytes": 19604
+    },
+    {
+      "text": "차",
+      "offset": 551028,
+      "bytes": 10368
+    },
+    {
+      "text": "김치",
+      "offset": 561396,
+      "bytes": 17024
+    },
+    {
+      "text": "고양이",
+      "offset": 578420,
+      "bytes": 20452
+    },
+    {
+      "text": "개",
+      "offset": 598872,
+      "bytes": 18560
+    },
+    {
+      "text": "친구",
+      "offset": 617432,
+      "bytes": 24050
+    },
+    {
+      "text": "가족",
+      "offset": 641482,
+      "bytes": 20096
+    },
+    {
+      "text": "엄마",
+      "offset": 661578,
+      "bytes": 14976
+    },
+    {
+      "text": "아빠",
+      "offset": 676554,
+      "bytes": 27264
+    },
+    {
+      "text": "학교",
+      "offset": 703818,
+      "bytes": 27264
+    },
+    {
+      "text": "집",
+      "offset": 731082,
+      "bytes": 17024
+    },
+    {
+      "text": "책",
+      "offset": 748106,
+      "bytes": 19282
+    },
+    {
+      "text": "가방",
+      "offset": 767388,
+      "bytes": 22860
+    },
+    {
+      "text": "의자",
+      "offset": 790248,
+      "bytes": 16400
+    },
+    {
+      "text": "문",
+      "offset": 806648,
+      "bytes": 19306
+    },
+    {
+      "text": "오늘",
+      "offset": 825954,
+      "bytes": 11904
+    },
+    {
+      "text": "내일",
+      "offset": 837858,
+      "bytes": 24360
+    },
+    {
+      "text": "어제",
+      "offset": 862218,
+      "bytes": 14464
+    },
+    {
+      "text": "아침",
+      "offset": 876682,
+      "bytes": 20716
+    },
+    {
+      "text": "밤",
+      "offset": 897398,
+      "bytes": 17536
+    },
+    {
+      "text": "하나",
+      "offset": 914934,
+      "bytes": 22656
+    },
+    {
+      "text": "둘",
+      "offset": 937590,
+      "bytes": 17536
+    },
+    {
+      "text": "셋",
+      "offset": 955126,
+      "bytes": 17024
+    },
+    {
+      "text": "안녕하세요",
+      "offset": 972150,
+      "bytes": 36218
+    },
+    {
+      "text": "감사합니다",
+      "offset": 1008368,
+      "bytes": 33384
+    },
+    {
+      "text": "죄송합니다",
+      "offset": 1041752,
+      "bytes": 36260
+    },
+    {
+      "text": "네",
+      "offset": 1078012,
+      "bytes": 14464
+    },
+    {
+      "text": "아니요",
+      "offset": 1092476,
+      "bytes": 20940
+    },
+    {
+      "text": "좋아요",
+      "offset": 1113416,
+      "bytes": 21120
+    }
+  ]
+}

@@ -41,3 +41,11 @@ Store reusable music and sound-effect sources in `music/`.
 - Prefer 16 kHz, 16-bit mono PCM when it matches the current BSP audio path.
 - Check Flash and internal-RAM cost before embedding audio; stream or chunk long recordings.
 - Do not commit media without redistribution permission.
+
+## Korean Pocket assets
+
+- `fonts/NotoSansCJKsc-Regular.otf` and `fonts/NotoSansCJK-OFL.txt`: [Noto CJK](https://github.com/notofonts/noto-cjk), SIL OFL.
+- `fonts/korean_font_16.c`, `fonts/korean_font_28.c`, `fonts/korean_symbols.txt`: uncompressed 2-bpp LVGL subsets generated with lv_font_conv 1.5.3 from the fixed course/UI.
+- `music/korean_mms_16k.pcm`, `music/korean_mms_manifest.json`: 60 locally synthesized Meta MMS Korean clips, 16 kHz signed 16-bit mono PCM. Source model CC-BY-NC-4.0; personal noncommercial prototype only. Replace speech assets before commercial distribution. The manifest records text, model revision, hashes and byte offsets.
+
+Generation, source references and integration are documented in [Korean Pocket](../docs/applications/korean-pocket.md). No voice-model weights are embedded.

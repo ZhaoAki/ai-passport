@@ -49,14 +49,14 @@ if ! curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
     gh release download "v${version}" --repo rhysd/actionlint \
         --pattern "${archive_name}" --dir "${destination}"
 fi
-if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s  %s\n' "${checksum}" "${archive_path}" | sha256sum --check --status
-elif command -v shasum >/dev/null 2>&1; then
-    [[ "$(shasum -a 256 "${archive_path}" | awk '{print $1}')" == "${checksum}" ]]
-else
-    echo "No SHA-256 verification tool is available" >&2
-    exit 1
-fi
+python3 - "${archive_path}" "${checksum}" <<'VERIFY'
+import hashlib
+import pathlib
+import sys
+actual = hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()
+if actual != sys.argv[2]:
+    raise SystemExit("actionlint archive SHA-256 mismatch")
+VERIFY
 tar -xzf "${archive_path}" -C "${destination}" actionlint
 chmod +x "${destination}/actionlint"
 printf '%s\n' "${destination}/actionlint"

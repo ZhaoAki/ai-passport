@@ -39,3 +39,11 @@
 - 与当前 BSP 音频路径匹配时优先采用 16 kHz、16 位单声道 PCM。
 - 嵌入音频前评估 Flash 与内部 RAM 成本；长录音应流式或分块。
 - 无再分发许可不提交媒体文件。
+
+## 韩语口袋课素材
+
+- `fonts/NotoSansCJKsc-Regular.otf` 和 `fonts/NotoSansCJK-OFL.txt`：来自 [Noto CJK](https://github.com/notofonts/noto-cjk)，采用 SIL OFL 许可。
+- `fonts/korean_font_16.c`、`fonts/korean_font_28.c`、`fonts/korean_symbols.txt`：按固定课程与界面裁剪，使用 lv_font_conv 1.5.3 生成，2 bpp、无压缩。
+- `music/korean_mms_16k.pcm` 和 `music/korean_mms_manifest.json`：本地合成的 60 段 Meta MMS 韩语音频，16 kHz、16 位、单声道 PCM。源模型采用 CC-BY-NC-4.0 许可，仅用于个人非商业原型，商业发行前应替换发音素材。清单记录文本、模型版本、哈希和音频偏移。
+
+生成方式、来源及集成说明见[韩语口袋课](../docs/applications/korean-pocket.zh_CN.md)。设备固件不包含语音模型权重。
