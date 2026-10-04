@@ -170,14 +170,69 @@ static void test_settings_rows(void) {
     s_model.page = LANLAN_PAGE_SETTINGS;
     assert(s_model.settings_row == LANLAN_SETTINGS_ROW_REFRESH);
 
-    /* Rows cycle and stay inside the documented bounds. */
-    for (int i = 0; i < LANLAN_SETTINGS_ROW_COUNT; ++i) {
+    /* The list order is the documented one: actions and toggles, then the two
+     * timeout rows, then the read-only information rows. */
+    assert(LANLAN_SETTINGS_ROW_REFRESH == 0);
+    assert(LANLAN_SETTINGS_ROW_MUTE == 1);
+    assert(LANLAN_SETTINGS_ROW_REMINDER_SOUND == 2);
+    assert(LANLAN_SETTINGS_ROW_REMINDER_LIST == 3);
+    assert(LANLAN_SETTINGS_ROW_DIM == 4);
+    assert(LANLAN_SETTINGS_ROW_SCREEN_OFF == 5);
+    assert(LANLAN_SETTINGS_ROW_TIMEZONE == 6);
+    assert(LANLAN_SETTINGS_ROW_SYNC == 7);
+    assert(LANLAN_SETTINGS_ROW_STORAGE == 8);
+    assert(LANLAN_SETTINGS_ROW_COUNT == 9);
+
+    /* Rows move one at a time. DOWN on a timeout row changes that row's value
+     * instead of moving (its own test covers that), so navigation is walked in
+     * the three sections the list has. */
+    for (int i = LANLAN_SETTINGS_ROW_REFRESH; i < LANLAN_SETTINGS_ROW_DIM; ++i) {
+        assert((int)s_model.settings_row == i);
+        press(&s_model, LANLAN_KEY_DOWN);
+    }
+    assert(s_model.settings_row == LANLAN_SETTINGS_ROW_DIM);
+    /* Each gesture on a timeout row steps that row's value and keeps the
+     * selection, so the list does not scroll away while a value is adjusted.
+     * The default dim is 30 s; DOWN/UP walk the allowed steps and clamp. */
+    assert(s_model.dim_seconds == LANLAN_TIMEOUT_DIM_DEFAULT_SECONDS);
+    press(&s_model, LANLAN_KEY_DOWN);
+    assert(s_model.settings_row == LANLAN_SETTINGS_ROW_DIM);
+    assert(s_model.dim_seconds == 60);
+    assert(s_model.screen_off_seconds == 90);   /* repaired above the new dim */
+    press(&s_model, LANLAN_KEY_UP);
+    assert(s_model.settings_row == LANLAN_SETTINGS_ROW_DIM);
+    assert(s_model.dim_seconds == 30);
+    assert(s_model.screen_off_seconds == 90);
+    press(&s_model, LANLAN_KEY_UP);
+    assert(s_model.dim_seconds == 15);
+    press(&s_model, LANLAN_KEY_UP);             /* clamped at the lowest step */
+    assert(s_model.dim_seconds == 15);
+    assert(s_model.settings_row == LANLAN_SETTINGS_ROW_DIM);
+    press(&s_model, LANLAN_KEY_DOWN);
+    assert(s_model.dim_seconds == 30);
+    assert(s_model.screen_off_seconds > s_model.dim_seconds);
+
+    /* On the screen-off row the same gestures step its value. */
+    s_model.settings_row = LANLAN_SETTINGS_ROW_SCREEN_OFF;
+    const int screen_off_now = s_model.screen_off_seconds;
+    press(&s_model, LANLAN_KEY_DOWN);
+    assert(s_model.settings_row == LANLAN_SETTINGS_ROW_SCREEN_OFF);
+    assert(s_model.screen_off_seconds > screen_off_now);
+    press(&s_model, LANLAN_KEY_UP);
+    assert(s_model.settings_row == LANLAN_SETTINGS_ROW_SCREEN_OFF);
+    assert(s_model.screen_off_seconds == screen_off_now);
+
+    /* The read-only rows still move one at a time and the list wraps. */
+    s_model.settings_row = LANLAN_SETTINGS_ROW_TIMEZONE;
+    for (int i = LANLAN_SETTINGS_ROW_TIMEZONE; i < LANLAN_SETTINGS_ROW_COUNT; ++i) {
         assert((int)s_model.settings_row == i);
         press(&s_model, LANLAN_KEY_DOWN);
     }
     assert(s_model.settings_row == LANLAN_SETTINGS_ROW_REFRESH);
     press(&s_model, LANLAN_KEY_UP);
     assert(s_model.settings_row == LANLAN_SETTINGS_ROW_STORAGE);
+    press(&s_model, LANLAN_KEY_DOWN);
+    assert(s_model.settings_row == LANLAN_SETTINGS_ROW_REFRESH);
 
     /* Refresh asks for a sync; the toggles flip in place. */
     s_model.settings_row = LANLAN_SETTINGS_ROW_REFRESH;
@@ -199,6 +254,10 @@ static void test_settings_rows(void) {
     assert(s_model.page == LANLAN_PAGE_REMINDERS);
     assert(press(&s_model, LANLAN_KEY_OK_LONG) == LANLAN_ACTION_BACK_HOME);
     assert(s_model.page == LANLAN_PAGE_SETTINGS);
+    /* The timeout rows sit with the toggles, before the read-only rows. */
+    assert(LANLAN_SETTINGS_ROW_DIM > LANLAN_SETTINGS_ROW_REMINDER_LIST);
+    assert(LANLAN_SETTINGS_ROW_SCREEN_OFF == LANLAN_SETTINGS_ROW_DIM + 1);
+    assert(LANLAN_SETTINGS_ROW_SCREEN_OFF < LANLAN_SETTINGS_ROW_TIMEZONE);
     for (int row = LANLAN_SETTINGS_ROW_TIMEZONE; row <= LANLAN_SETTINGS_ROW_STORAGE; ++row) {
         s_model.settings_row = (lanlan_settings_row_t)row;
         assert(press(&s_model, LANLAN_KEY_OK_CLICK) == LANLAN_ACTION_NONE);
@@ -254,61 +313,139 @@ static void test_status_page(void) {
     assert(s_model.page == LANLAN_PAGE_HOME);
 }
 
+/* A whole-struct snapshot is the strongest way to prove the wake gesture
+ * changed nothing; it also covers every field a future edit might add. */
+static lanlan_model_t snapshot(const lanlan_model_t *model) { return *model; }
+
 static void test_wake_only_first_gesture(void) {
     lanlan_model_init(&s_model);
+    load_records(&s_model, 3);
+
+    const lanlan_key_t keys[] = {LANLAN_KEY_UP, LANLAN_KEY_DOWN, LANLAN_KEY_OK_CLICK,
+                                 LANLAN_KEY_OK_LONG};
+    const lanlan_page_t pages[] = {LANLAN_PAGE_HOME, LANLAN_PAGE_RECORDS, LANLAN_PAGE_DETAIL,
+                                   LANLAN_PAGE_COMPANION, LANLAN_PAGE_SETTINGS,
+                                   LANLAN_PAGE_REMINDERS, LANLAN_PAGE_STATUS};
+
+    /* Every key on every page, with the screen off: the gesture is consumed
+     * entirely and only turns the display on. */
+    for (size_t p = 0; p < sizeof(pages) / sizeof(pages[0]); ++p) {
+        for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); ++k) {
+            lanlan_model_init(&s_model);
+            load_records(&s_model, 3);
+            s_model.page = pages[p];
+            if (s_model.page == LANLAN_PAGE_RECORDS) s_model.record_index = 1;
+            if (s_model.page == LANLAN_PAGE_COMPANION) s_model.character = LANLAN_CHARACTER_BLINK;
+            lanlan_model_set_active(&s_model, false);
+
+            lanlan_model_t before = snapshot(&s_model);
+            lanlan_key_event_t event = {.key = keys[k], .woke_screen = true};
+            assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_WAKE_ONLY);
+            assert(s_model.active);
+            /* Nothing changed except the active flag. */
+            before.active = true;
+            assert(memcmp(&before, &s_model, sizeof(before)) == 0);
+            assert(s_model.page == pages[p]);
+            assert(!lanlan_model_pending_record_action(&s_model));
+
+            /* The same gesture again (display now on) is delivered normally: it
+             * must not be swallowed by a second wake. */
+            lanlan_action_t second = lanlan_model_handle_key(&s_model, &event);
+            assert(second != LANLAN_ACTION_WAKE_ONLY);
+            if (keys[k] == LANLAN_KEY_OK_LONG) {
+                /* Long press backs out of every page; on home it is unassigned. */
+                assert(second == (pages[p] == LANLAN_PAGE_HOME ? LANLAN_ACTION_NONE
+                                                               : LANLAN_ACTION_BACK_HOME));
+            }
+        }
+    }
+
+    /* The concrete cases the rule exists for: the waking gesture must not move
+     * the selection, open a record, toggle a setting or pet the character. */
+    lanlan_model_init(&s_model);
+    load_records(&s_model, 3);
     s_model.page = LANLAN_PAGE_HOME;
-    s_model.home_entry = LANLAN_HOME_ENTRY_TODAY;
-
-    /* The display is off. */
+    s_model.home_entry = LANLAN_HOME_ENTRY_RECORDS;
     lanlan_model_set_active(&s_model, false);
-    /* A long press only wakes the screen and must not also deliver a click:
-     * the home page would otherwise enter the selected entry. */
-    lanlan_key_event_t event = {.key = LANLAN_KEY_OK_LONG, .woke_screen = true};
+    lanlan_key_event_t event = {.key = LANLAN_KEY_OK_CLICK, .woke_screen = true};
     assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_WAKE_ONLY);
-    assert(s_model.active);
     assert(s_model.page == LANLAN_PAGE_HOME);
-    assert(s_model.home_entry == LANLAN_HOME_ENTRY_TODAY);
+    assert(s_model.home_entry == LANLAN_HOME_ENTRY_RECORDS);
+    /* The next click opens the selected entry normally. */
+    event.woke_screen = false;
+    assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_NONE);
+    assert(s_model.page == LANLAN_PAGE_RECORDS);
 
-    /* The release queued behind it is an ordinary click for the application and
-     * must be handled normally; the model itself never fabricates one. */
+    /* A records-page DOWN must not move the highlight on the waking press. */
+    s_model.page = LANLAN_PAGE_RECORDS;
+    s_model.record_index = 1;
+    lanlan_model_set_active(&s_model, false);
+    event.key = LANLAN_KEY_DOWN;
+    assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_WAKE_ONLY);
+    assert(s_model.record_index == 1);
+    assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_NONE);
+    assert(s_model.record_index == 2);
+
+    /* Settings: the waking gesture must not toggle or step anything. */
+    lanlan_model_init(&s_model);
+    s_model.page = LANLAN_PAGE_SETTINGS;
+    s_model.settings_row = LANLAN_SETTINGS_ROW_MUTE;
     lanlan_model_set_active(&s_model, false);
     event.key = LANLAN_KEY_OK_CLICK;
-    assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_RECORD_OPEN);
-    assert(s_model.page == LANLAN_PAGE_RECORDS);
-
-    /* UP/DOWN also wake the screen and still navigate. */
-    lanlan_model_set_active(&s_model, false);
-    event.key = LANLAN_KEY_OK_LONG;
     assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_WAKE_ONLY);
-    assert(s_model.page == LANLAN_PAGE_RECORDS);
+    assert(!s_model.globally_muted);
+    s_model.settings_row = LANLAN_SETTINGS_ROW_DIM;
+    s_model.page = LANLAN_PAGE_SETTINGS;
     lanlan_model_set_active(&s_model, false);
+    int dim = s_model.dim_seconds;
     event.key = LANLAN_KEY_DOWN;
-    assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_NONE);
-    assert(s_model.active);
+    assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_WAKE_ONLY);
+    assert(s_model.dim_seconds == dim);
+    assert(s_model.settings_row == LANLAN_SETTINGS_ROW_DIM);
 
-    /* With the screen already on, a long press is delivered normally again. */
-    event.key = LANLAN_KEY_OK_LONG;
-    assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_BACK_HOME);
-    assert(s_model.page == LANLAN_PAGE_HOME);
-    /* An event that claims it woke the screen while the model is active is just
-     * a normal key: the flag is informational for the backlight, not a second
-     * suppression path. */
-    event.key = LANLAN_KEY_DOWN;
-    event.woke_screen = true;
-    lanlan_model_set_active(&s_model, true);
-    assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_NONE);
-    assert(s_model.home_entry == LANLAN_HOME_ENTRY_RECORDS);
-
-    /* Waking on the companion page must not deliver the pet action. */
+    /* Companion: the waking OK must not pet the character. */
+    lanlan_model_init(&s_model);
     s_model.page = LANLAN_PAGE_COMPANION;
     s_model.character = LANLAN_CHARACTER_IDLE;
     lanlan_model_set_active(&s_model, false);
-    event.key = LANLAN_KEY_OK_LONG;
-    event.woke_screen = true;
+    event.key = LANLAN_KEY_OK_CLICK;
     assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_WAKE_ONLY);
-    assert(s_model.page == LANLAN_PAGE_COMPANION);
+    assert(s_model.companion_mood == 0);
     assert(s_model.character == LANLAN_CHARACTER_IDLE);
     assert(!lanlan_model_pending_record_action(&s_model));
+    assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_COMPANION_PET);
+
+    /* A dimmed display is still ON (active == true), so the first gesture is
+     * delivered normally and is never consumed. */
+    lanlan_model_init(&s_model);
+    load_records(&s_model, 3);
+    s_model.page = LANLAN_PAGE_RECORDS;
+    s_model.record_index = 0;
+    lanlan_model_set_active(&s_model, true); /* dimmed, not off */
+    event.key = LANLAN_KEY_DOWN;
+    event.woke_screen = false;
+    assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_NONE);
+    assert(s_model.record_index == 1);
+    /* Even a caller that wrongly reports a wake flag cannot suppress a gesture
+     * while the model is active: the model owns the rule. */
+    event.woke_screen = true;
+    assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_NONE);
+    assert(s_model.record_index == 2);
+    event.key = LANLAN_KEY_OK_CLICK;
+    assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_RECORD_OPEN);
+    assert(s_model.page == LANLAN_PAGE_DETAIL);
+
+    /* set_active(false) re-arms the rule for the next gesture, and set_active
+     * back to true disarms it. */
+    lanlan_model_set_active(&s_model, false);
+    event.key = LANLAN_KEY_UP;
+    assert(lanlan_model_handle_key(&s_model, &event) == LANLAN_ACTION_WAKE_ONLY);
+    assert(s_model.active);
+    lanlan_model_set_active(&s_model, false);
+    assert(!s_model.active);
+    lanlan_model_set_active(&s_model, true);
+    event.key = LANLAN_KEY_UP;
+    assert(lanlan_model_handle_key(&s_model, &event) != LANLAN_ACTION_WAKE_ONLY);
 }
 
 static void test_companion_never_emits_a_record_action(void) {
@@ -356,6 +493,254 @@ static void test_companion_never_emits_a_record_action(void) {
     assert(lanlan_action_is_record_write(LANLAN_ACTION_RECORD_REVOKE));
     assert(!lanlan_action_is_record_write(LANLAN_ACTION_COMPANION_PET));
     assert(!lanlan_action_is_record_write(LANLAN_ACTION_RECORD_OPEN));
+}
+
+/* The two timeout rows exist at the documented positions and expose exact
+ * labels plus one value text per allowed step. */
+static void test_settings_timeout_rows(void) {
+    lanlan_model_init(&s_model);
+    assert(LANLAN_SETTINGS_ROW_COUNT == 9);
+    assert(LANLAN_SETTINGS_ROW_DIM == 4);
+    assert(LANLAN_SETTINGS_ROW_SCREEN_OFF == 5);
+    assert(strcmp(lanlan_view_settings_row_label(LANLAN_SETTINGS_ROW_DIM),
+                  LANLAN_STR_SETTINGS_ROW_DIM)
+           == 0);
+    assert(strcmp(lanlan_view_settings_row_label(LANLAN_SETTINGS_ROW_SCREEN_OFF),
+                  LANLAN_STR_SETTINGS_ROW_SCREEN_OFF)
+           == 0);
+    assert(strcmp(LANLAN_STR_SETTINGS_ROW_DIM, "调暗") == 0);
+    assert(strcmp(LANLAN_STR_SETTINGS_ROW_SCREEN_OFF, "熄屏") == 0);
+
+    /* Documented allowed steps, ascending and exact. */
+    const int dims[LANLAN_DIM_STEP_COUNT] = {15, 30, 60, 120};
+    const int offs[LANLAN_SCREEN_OFF_STEP_COUNT] = {60, 90, 180, 300};
+    for (int i = 0; i < LANLAN_DIM_STEP_COUNT; ++i) {
+        assert(LANLAN_DIM_STEPS_SECONDS[i] == dims[i]);
+        assert(lanlan_model_dim_step_index(dims[i]) == i);
+        assert(strcmp(lanlan_view_dim_text(dims[i]),
+                      i == 0 ? LANLAN_STR_SETTINGS_VALUE_DIM_15S
+                             : (i == 1 ? LANLAN_STR_SETTINGS_VALUE_DIM_30S
+                                       : (i == 2 ? LANLAN_STR_SETTINGS_VALUE_DIM_60S
+                                                 : LANLAN_STR_SETTINGS_VALUE_DIM_120S)))
+               == 0);
+    }
+    for (int i = 0; i < LANLAN_SCREEN_OFF_STEP_COUNT; ++i) {
+        assert(LANLAN_SCREEN_OFF_STEPS_SECONDS[i] == offs[i]);
+        assert(lanlan_model_screen_off_step_index(offs[i]) == i);
+        assert(strcmp(lanlan_view_screen_off_text(offs[i]),
+                      i == 0 ? LANLAN_STR_SETTINGS_VALUE_SCREEN_OFF_60S
+                             : (i == 1 ? LANLAN_STR_SETTINGS_VALUE_SCREEN_OFF_90S
+                                       : (i == 2 ? LANLAN_STR_SETTINGS_VALUE_SCREEN_OFF_180S
+                                                 : LANLAN_STR_SETTINGS_VALUE_SCREEN_OFF_300S)))
+               == 0);
+    }
+    /* The rendered value text uses the minute form where the step is whole
+     * minutes, and the UI never has to format anything itself. */
+    assert(strcmp(lanlan_view_dim_text(60), "1 分钟") == 0);
+    assert(strcmp(lanlan_view_dim_text(120), "2 分钟") == 0);
+    assert(strcmp(lanlan_view_screen_off_text(180), "3 分钟") == 0);
+    assert(strcmp(lanlan_view_screen_off_text(300), "5 分钟") == 0);
+    assert(strcmp(lanlan_view_dim_text(15), "15 秒") == 0);
+    assert(strcmp(lanlan_view_screen_off_text(90), "90 秒") == 0);
+    /* The shared values read per row: 60 is "1 分钟" as a dim step and "60 秒"
+     * as a screen-off step, and 120 is "2 分钟" against "not a screen-off step". */
+    assert(strcmp(lanlan_view_dim_text(60), "1 分钟") == 0);
+    assert(strcmp(lanlan_view_screen_off_text(60), "60 秒") == 0);
+    assert(strcmp(lanlan_view_dim_text(120), "2 分钟") == 0);
+    assert(lanlan_view_screen_off_text(120)[0] == '\0');
+    assert(strcmp(lanlan_view_screen_off_text(15), "15 秒") != 0);
+    assert(lanlan_view_screen_off_text(15)[0] == '\0');
+    /* A value that is not an allowed step has no selectable text. */
+    assert(lanlan_model_dim_step_index(45) == -1);
+    assert(lanlan_model_screen_off_step_index(45) == -1);
+    assert(lanlan_view_timeout_text(45)[0] == '\0');
+    assert(lanlan_view_timeout_text(0)[0] == '\0');
+    assert(lanlan_view_timeout_text(-5)[0] == '\0');
+    assert(lanlan_view_dim_text(45)[0] == '\0');
+    assert(lanlan_view_screen_off_text(45)[0] == '\0');
+    /* The row helper picks the right table for each row. */
+    assert(strcmp(lanlan_view_settings_row_value_text(&s_model, LANLAN_SETTINGS_ROW_DIM), "30 秒")
+           == 0);
+    assert(strcmp(lanlan_view_settings_row_value_text(&s_model, LANLAN_SETTINGS_ROW_SCREEN_OFF),
+                  "90 秒")
+           == 0);
+    s_model.dim_seconds = 60;
+    s_model.screen_off_seconds = 90;
+    assert(strcmp(lanlan_view_settings_row_value_text(&s_model, LANLAN_SETTINGS_ROW_DIM), "1 分钟")
+           == 0);
+    assert(strcmp(lanlan_view_settings_row_value_text(&s_model, LANLAN_SETTINGS_ROW_SCREEN_OFF),
+                  "90 秒")
+           == 0);
+    s_model.dim_seconds = LANLAN_TIMEOUT_DIM_DEFAULT_SECONDS;
+    s_model.screen_off_seconds = LANLAN_TIMEOUT_SCREEN_OFF_DEFAULT_SECONDS;
+
+    /* Defaults satisfy the invariant and render through the row helper. */
+    assert(s_model.dim_seconds == LANLAN_TIMEOUT_DIM_DEFAULT_SECONDS);
+    assert(s_model.screen_off_seconds == LANLAN_TIMEOUT_SCREEN_OFF_DEFAULT_SECONDS);
+    assert(lanlan_model_timeouts_valid(s_model.dim_seconds, s_model.screen_off_seconds));
+    assert(strcmp(lanlan_view_settings_row_value_text(&s_model, LANLAN_SETTINGS_ROW_DIM),
+                  LANLAN_STR_SETTINGS_VALUE_DIM_30S)
+           == 0);
+    assert(strcmp(lanlan_view_settings_row_value_text(&s_model, LANLAN_SETTINGS_ROW_SCREEN_OFF),
+                  LANLAN_STR_SETTINGS_VALUE_SCREEN_OFF_90S)
+           == 0);
+    /* Non-timeout rows keep their own values, and rows without one are empty. */
+    assert(strcmp(lanlan_view_settings_row_value_text(&s_model, LANLAN_SETTINGS_ROW_MUTE),
+                  LANLAN_STR_SETTINGS_VALUE_OFF)
+           == 0);
+    s_model.globally_muted = true;
+    assert(strcmp(lanlan_view_settings_row_value_text(&s_model, LANLAN_SETTINGS_ROW_MUTE),
+                  LANLAN_STR_SETTINGS_VALUE_ON)
+           == 0);
+    s_model.globally_muted = false;
+    assert(strcmp(lanlan_view_settings_row_value_text(&s_model, LANLAN_SETTINGS_ROW_REMINDER_SOUND),
+                  LANLAN_STR_SETTINGS_VALUE_OFF)
+           == 0);
+    assert(lanlan_view_settings_row_value_text(&s_model, LANLAN_SETTINGS_ROW_REFRESH)[0] == '\0');
+    assert(lanlan_view_settings_row_value_text(&s_model, LANLAN_SETTINGS_ROW_REMINDER_LIST)[0]
+           == '\0');
+    assert(lanlan_view_settings_row_value_text(&s_model, LANLAN_SETTINGS_ROW_SYNC)[0] == '\0');
+    assert(lanlan_view_settings_row_value_text(&s_model, -1)[0] == '\0');
+    assert(lanlan_view_settings_row_value_text(&s_model, LANLAN_SETTINGS_ROW_COUNT)[0] == '\0');
+    assert(lanlan_view_settings_row_value_text(NULL, LANLAN_SETTINGS_ROW_DIM)[0] == '\0');
+}
+
+static void test_settings_timeout_stepping_and_rule(void) {
+    lanlan_model_t model;
+    lanlan_model_init(&model);
+    assert(lanlan_model_set_timeouts(&model, 15, 60));
+
+    /* Stepping up walks the allowed steps and clamps at the top. */
+    assert(lanlan_model_step_dim(&model, 1) && model.dim_seconds == 30);
+    assert(model.screen_off_seconds == 60); /* 30 < 60, no repair needed */
+    assert(lanlan_model_step_dim(&model, 1) && model.dim_seconds == 60);
+    assert(model.screen_off_seconds == 90); /* 60 is not < 60 -> repaired */
+    assert(lanlan_model_timeouts_valid(model.dim_seconds, model.screen_off_seconds));
+    assert(lanlan_model_step_dim(&model, 1) && model.dim_seconds == 120);
+    assert(model.screen_off_seconds == 180); /* repaired to the next step */
+    /* 120 is the largest dim step: further up is refused and changes nothing. */
+    assert(!lanlan_model_step_dim(&model, 1));
+    assert(model.dim_seconds == 120 && model.screen_off_seconds == 180);
+
+    /* Stepping down clamps at the bottom. */
+    assert(lanlan_model_step_dim(&model, -1) && model.dim_seconds == 60);
+    assert(model.screen_off_seconds == 180); /* lowering dim never changes it */
+    assert(lanlan_model_step_dim(&model, -1) && model.dim_seconds == 30);
+    assert(lanlan_model_step_dim(&model, -1) && model.dim_seconds == 15);
+    assert(!lanlan_model_step_dim(&model, -1));
+    assert(model.dim_seconds == 15);
+
+    /* Screen-off steps clamp at the top and at the smallest allowed step. */
+    model.screen_off_seconds = 300;
+    assert(!lanlan_model_step_screen_off(&model, 1));
+    assert(model.screen_off_seconds == 300);
+    assert(lanlan_model_step_screen_off(&model, -1) && model.screen_off_seconds == 180);
+    assert(lanlan_model_step_screen_off(&model, -1) && model.screen_off_seconds == 90);
+    assert(lanlan_model_step_screen_off(&model, -1) && model.screen_off_seconds == 60);
+    assert(!lanlan_model_step_screen_off(&model, -1)); /* 60 is the smallest step */
+
+    /* A screen-off step down that would land on or below dim is refused, not
+     * clamped: with dim 120 and screen-off 180, 90 is not allowed. */
+    assert(lanlan_model_set_timeouts(&model, 120, 180));
+    assert(!lanlan_model_step_screen_off(&model, -1));
+    assert(model.screen_off_seconds == 180 && model.dim_seconds == 120);
+    assert(lanlan_model_timeouts_valid(model.dim_seconds, model.screen_off_seconds));
+    /* Lowering dim away from the barrier makes the step legal again. */
+    assert(lanlan_model_step_dim(&model, -1) && model.dim_seconds == 60);
+    assert(lanlan_model_step_screen_off(&model, -1) && model.screen_off_seconds == 90);
+    assert(lanlan_model_step_dim(&model, -1) && model.dim_seconds == 30);
+    assert(lanlan_model_step_screen_off(&model, -1) && model.screen_off_seconds == 60);
+    assert(lanlan_model_timeouts_valid(model.dim_seconds, model.screen_off_seconds));
+
+    /* Raising dim to the maximum repairs screen-off to the largest step, and
+     * from there the dim step is refused so the invariant can never break. */
+    lanlan_model_init(&model);
+    assert(lanlan_model_set_timeouts(&model, 15, 60));
+    assert(lanlan_model_step_dim(&model, 1));                 /* 30 / 60 */
+    assert(lanlan_model_step_dim(&model, 1));                 /* 60 / 90 */
+    assert(lanlan_model_step_dim(&model, 1));                 /* 120 / 180 */
+    assert(!lanlan_model_step_dim(&model, 1));                /* at the top */
+    assert(model.dim_seconds == 120 && model.screen_off_seconds == 180);
+    assert(lanlan_model_timeouts_valid(model.dim_seconds, model.screen_off_seconds));
+
+    /* The whole reachable space satisfies the invariant. This walks every dim
+     * step from every starting screen-off step in both directions. */
+    for (int o = 0; o < LANLAN_SCREEN_OFF_STEP_COUNT; ++o) {
+        for (int d = 0; d < LANLAN_DIM_STEP_COUNT; ++d) {
+            if (LANLAN_DIM_STEPS_SECONDS[d] >= LANLAN_SCREEN_OFF_STEPS_SECONDS[o]) continue;
+            assert(lanlan_model_set_timeouts(&model, LANLAN_DIM_STEPS_SECONDS[d],
+                                             LANLAN_SCREEN_OFF_STEPS_SECONDS[o]));
+            for (int step = 0; step < 8; ++step) {
+                lanlan_model_step_dim(&model, 1);
+                assert(model.screen_off_seconds > model.dim_seconds);
+                assert(lanlan_model_timeouts_valid(model.dim_seconds, model.screen_off_seconds));
+            }
+            for (int step = 0; step < 8; ++step) {
+                lanlan_model_step_dim(&model, -1);
+                assert(model.screen_off_seconds > model.dim_seconds);
+            }
+            for (int step = 0; step < 8; ++step) {
+                lanlan_model_step_screen_off(&model, 1);
+                assert(model.screen_off_seconds > model.dim_seconds);
+            }
+            for (int step = 0; step < 8; ++step) {
+                lanlan_model_step_screen_off(&model, -1);
+                assert(model.screen_off_seconds > model.dim_seconds);
+                assert(lanlan_model_timeouts_valid(model.dim_seconds, model.screen_off_seconds));
+            }
+        }
+    }
+
+    /* An invalid pair is refused outright, so no caller can install one. */
+    lanlan_model_init(&model);
+    assert(!lanlan_model_set_timeouts(&model, 45, 90));     /* not a dim step */
+    assert(!lanlan_model_set_timeouts(&model, 30, 45));     /* not a screen-off step */
+    assert(!lanlan_model_set_timeouts(&model, 60, 60));     /* not strictly greater */
+    assert(!lanlan_model_set_timeouts(&model, 120, 90));    /* smaller than dim */
+    assert(!lanlan_model_set_timeouts(&model, -1, 90));
+    assert(!lanlan_model_set_timeouts(&model, 30, 0));
+    assert(!lanlan_model_set_timeouts(NULL, 30, 90));
+    assert(model.dim_seconds == LANLAN_TIMEOUT_DIM_DEFAULT_SECONDS);
+    assert(model.screen_off_seconds == LANLAN_TIMEOUT_SCREEN_OFF_DEFAULT_SECONDS);
+    assert(!lanlan_model_timeouts_valid(60, 60));
+    assert(!lanlan_model_timeouts_valid(120, 90));
+    assert(!lanlan_model_timeouts_valid(31, 90));
+    assert(lanlan_model_timeouts_valid(120, 180));
+    assert(lanlan_model_timeouts_valid(15, 60));
+    assert(!lanlan_model_step_dim(NULL, 1));
+    assert(!lanlan_model_step_screen_off(NULL, 1));
+
+    /* The vertical gestures on a timeout row change the value, not the
+     * selection; OK has nothing to toggle there. */
+    lanlan_model_init(&model);
+    model.page = LANLAN_PAGE_SETTINGS;
+    model.settings_row = LANLAN_SETTINGS_ROW_DIM;
+    int before = model.dim_seconds;
+    lanlan_key_event_t event = {.key = LANLAN_KEY_DOWN, .woke_screen = false};
+    assert(lanlan_model_handle_key(&model, &event) == LANLAN_ACTION_NONE);
+    assert(model.settings_row == LANLAN_SETTINGS_ROW_DIM);
+    assert(model.dim_seconds > before);
+    assert(model.screen_off_seconds > model.dim_seconds);
+    event.key = LANLAN_KEY_UP;
+    assert(lanlan_model_handle_key(&model, &event) == LANLAN_ACTION_NONE);
+    assert(model.dim_seconds == before);
+    assert(model.settings_row == LANLAN_SETTINGS_ROW_DIM);
+    event.key = LANLAN_KEY_OK_CLICK;
+    assert(lanlan_model_handle_key(&model, &event) == LANLAN_ACTION_NONE);
+    assert(model.dim_seconds == before);
+    /* On any other row the same gesture still moves the selection. */
+    model.settings_row = LANLAN_SETTINGS_ROW_MUTE;
+    event.key = LANLAN_KEY_DOWN;
+    lanlan_model_handle_key(&model, &event);
+    assert(model.settings_row == LANLAN_SETTINGS_ROW_REMINDER_SOUND);
+    /* The screen-off row behaves like the dim row. */
+    model.settings_row = LANLAN_SETTINGS_ROW_SCREEN_OFF;
+    before = model.screen_off_seconds;
+    event.key = LANLAN_KEY_DOWN;
+    lanlan_model_handle_key(&model, &event);
+    assert(model.screen_off_seconds > before);
+    assert(model.settings_row == LANLAN_SETTINGS_ROW_SCREEN_OFF);
+    assert(model.screen_off_seconds > model.dim_seconds);
 }
 
 /* UTF-8-safe occurrence counter for the "category appears once" assertions. */
@@ -763,6 +1148,8 @@ int main(void) {
     test_records_navigation_bounds();
     test_detail_toggles_only_the_view();
     test_settings_rows();
+    test_settings_timeout_rows();
+    test_settings_timeout_stepping_and_rule();
     test_reminder_page();
     test_status_page();
     test_wake_only_first_gesture();
@@ -771,6 +1158,6 @@ int main(void) {
     test_record_row_text();
     test_reminder_row_window_and_markers();
     test_sync_status_text_with_age();
-    puts("Lanlan model: PASS (navigation bounds, wake-only gesture, companion invariant, row text, reminder window, view model)");
+    puts("Lanlan model: PASS (navigation bounds, wake-only gesture, companion invariant, row text, reminder window, timeouts, view model)");
     return 0;
 }

@@ -10,6 +10,42 @@
 #define LANLAN_SYNC_AGE_FRESH_SECONDS 300
 #define LANLAN_SYNC_AGE_STALE_SECONDS 3600
 
+/* Allowed backlight timeout steps, ascending. The screen must always turn off
+ * after the dim timeout, so the screen-off list starts above the smallest dim
+ * step and the two lists are never allowed to cross. */
+const int LANLAN_DIM_STEPS_SECONDS[LANLAN_DIM_STEP_COUNT] = {15, 30, 60, 120};
+const int LANLAN_SCREEN_OFF_STEPS_SECONDS[LANLAN_SCREEN_OFF_STEP_COUNT] = {60, 90, 180, 300};
+
+/* Ascending index of the first step strictly greater than `value`, or -1 when
+ * no step qualifies. */
+static int next_step_above(const int *steps, int count, int value) {
+    for (int i = 0; i < count; ++i) {
+        if (steps[i] > value) return i;
+    }
+    return -1;
+}
+
+static int step_index_of(const int *steps, int count, int value) {
+    for (int i = 0; i < count; ++i) {
+        if (steps[i] == value) return i;
+    }
+    return -1;
+}
+
+int lanlan_model_dim_step_index(int seconds) {
+    return step_index_of(LANLAN_DIM_STEPS_SECONDS, LANLAN_DIM_STEP_COUNT, seconds);
+}
+
+int lanlan_model_screen_off_step_index(int seconds) {
+    return step_index_of(LANLAN_SCREEN_OFF_STEPS_SECONDS, LANLAN_SCREEN_OFF_STEP_COUNT, seconds);
+}
+
+bool lanlan_model_timeouts_valid(int dim_seconds, int screen_off_seconds) {
+    return lanlan_model_dim_step_index(dim_seconds) >= 0
+           && lanlan_model_screen_off_step_index(screen_off_seconds) >= 0
+           && screen_off_seconds > dim_seconds;
+}
+
 /* -------------------------------------------------------------- lifecycle -- */
 
 void lanlan_model_clear(lanlan_model_t *model) {
@@ -19,6 +55,8 @@ void lanlan_model_clear(lanlan_model_t *model) {
     model->active = true;
     model->character = LANLAN_CHARACTER_IDLE;
     model->detail_full = 0;
+    model->dim_seconds = LANLAN_TIMEOUT_DIM_DEFAULT_SECONDS;
+    model->screen_off_seconds = LANLAN_TIMEOUT_SCREEN_OFF_DEFAULT_SECONDS;
 }
 
 void lanlan_model_init(lanlan_model_t *model) { lanlan_model_clear(model); }
@@ -232,13 +270,33 @@ static lanlan_action_t handle_companion(lanlan_model_t *model, lanlan_key_t key)
     return LANLAN_ACTION_NONE;
 }
 
+/* Applies one vertical gesture on a timeout settings row. */
+static bool step_settings_timeout(lanlan_model_t *model, lanlan_settings_row_t row,
+                                  int direction) {
+    if (row == LANLAN_SETTINGS_ROW_DIM) return lanlan_model_step_dim(model, direction);
+    if (row == LANLAN_SETTINGS_ROW_SCREEN_OFF) return lanlan_model_step_screen_off(model, direction);
+    return false;
+}
+
 static lanlan_action_t handle_settings(lanlan_model_t *model, lanlan_key_t key) {
     switch (key) {
     case LANLAN_KEY_UP:
+        /* On a timeout row the vertical gestures change the value instead of
+         * moving the selection: the duration is the row's whole content. */
+        if (model->settings_row == LANLAN_SETTINGS_ROW_DIM
+            || model->settings_row == LANLAN_SETTINGS_ROW_SCREEN_OFF) {
+            step_settings_timeout(model, model->settings_row, -1);
+            return LANLAN_ACTION_NONE;
+        }
         model->settings_row = (lanlan_settings_row_t)cycle((int)model->settings_row,
                                                            LANLAN_SETTINGS_ROW_COUNT, -1);
         return LANLAN_ACTION_NONE;
     case LANLAN_KEY_DOWN:
+        if (model->settings_row == LANLAN_SETTINGS_ROW_DIM
+            || model->settings_row == LANLAN_SETTINGS_ROW_SCREEN_OFF) {
+            step_settings_timeout(model, model->settings_row, 1);
+            return LANLAN_ACTION_NONE;
+        }
         model->settings_row = (lanlan_settings_row_t)cycle((int)model->settings_row,
                                                            LANLAN_SETTINGS_ROW_COUNT, 1);
         return LANLAN_ACTION_NONE;
@@ -257,6 +315,11 @@ static lanlan_action_t handle_settings(lanlan_model_t *model, lanlan_key_t key) 
             model->reminder_offset = 0;
             model->reminder_index = 0;
             return LANLAN_ACTION_SETTINGS_REMINDER_LIST;
+        case LANLAN_SETTINGS_ROW_DIM:
+        case LANLAN_SETTINGS_ROW_SCREEN_OFF:
+            /* The timeout rows are stepped by the navigation gestures, not by
+             * OK: OK on these rows has nothing to toggle. */
+            return LANLAN_ACTION_NONE;
         case LANLAN_SETTINGS_ROW_TIMEZONE:
         case LANLAN_SETTINGS_ROW_SYNC:
         case LANLAN_SETTINGS_ROW_STORAGE:
@@ -308,11 +371,21 @@ static lanlan_action_t handle_status(lanlan_model_t *model, lanlan_key_t key) {
 lanlan_action_t lanlan_model_handle_key(lanlan_model_t *model, const lanlan_key_event_t *event) {
     if (!model || !event) return LANLAN_ACTION_NONE;
     if (!model->active) {
-        /* The first gesture after the screen turned off only wakes it. A long
-         * press is consumed entirely, so releasing it cannot also deliver a
-         * click and the model is not left half-active. */
+        /* The first gesture after the screen turns OFF only wakes the display.
+         * EVERY key and event is consumed, so the waking gesture can never move
+         * the selection, open a page, toggle a setting or open a record: that is
+         * exactly the accidental action the rule exists to prevent. The model
+         * owns this decision; the caller only drives the backlight.
+         *
+         * A dimmed display (backlight reduced but still on) keeps active == true,
+         * so it never consumes a gesture.
+         *
+         * The release half of a waking long press cannot deliver a click: the
+         * BSP registers no callback for the release of a long press, and the
+         * espressif/button state machine only emits BUTTON_SINGLE_CLICK from its
+         * short-press release path (see lanlan_model.h for the full evidence). */
         model->active = true;
-        if (event->key == LANLAN_KEY_OK_LONG) return LANLAN_ACTION_WAKE_ONLY;
+        return LANLAN_ACTION_WAKE_ONLY;
     }
     switch (model->page) {
     case LANLAN_PAGE_HOME: return handle_home(model, event->key);
@@ -324,6 +397,53 @@ lanlan_action_t lanlan_model_handle_key(lanlan_model_t *model, const lanlan_key_
     case LANLAN_PAGE_STATUS: return handle_status(model, event->key);
     }
     return LANLAN_ACTION_NONE;
+}
+
+/* ---------------------------------------------------- timeout selection -- */
+
+bool lanlan_model_set_timeouts(lanlan_model_t *model, int dim_seconds, int screen_off_seconds) {
+    if (!model) return false;
+    if (!lanlan_model_timeouts_valid(dim_seconds, screen_off_seconds)) return false;
+    model->dim_seconds = dim_seconds;
+    model->screen_off_seconds = screen_off_seconds;
+    return true;
+}
+
+bool lanlan_model_step_screen_off(lanlan_model_t *model, int direction) {
+    if (!model) return false;
+    int index = lanlan_model_screen_off_step_index(model->screen_off_seconds);
+    if (index < 0) return false;
+    int next = index + (direction > 0 ? 1 : -1);
+    if (next < 0 || next >= LANLAN_SCREEN_OFF_STEP_COUNT) return false;
+    int candidate = LANLAN_SCREEN_OFF_STEPS_SECONDS[next];
+    /* The screen-off value must stay strictly above dim, so a step down that
+     * would cross the dim value is refused rather than silently clamped: the
+     * caller can lower dim first, and the pair never becomes invalid. */
+    if (candidate <= model->dim_seconds) return false;
+    model->screen_off_seconds = candidate;
+    return true;
+}
+
+bool lanlan_model_step_dim(lanlan_model_t *model, int direction) {
+    if (!model) return false;
+    int index = lanlan_model_dim_step_index(model->dim_seconds);
+    if (index < 0) return false;
+    int next = index + (direction > 0 ? 1 : -1);
+    if (next < 0 || next >= LANLAN_DIM_STEP_COUNT) return false;
+    int candidate = LANLAN_DIM_STEPS_SECONDS[next];
+    if (candidate < model->screen_off_seconds) {
+        model->dim_seconds = candidate;
+        return true;
+    }
+    /* Raising dim past the current screen-off value would break the invariant,
+     * so screen-off is pushed to the next allowed step instead. If no step is
+     * large enough the dim step is refused and the pair stays valid. */
+    int repair = next_step_above(LANLAN_SCREEN_OFF_STEPS_SECONDS, LANLAN_SCREEN_OFF_STEP_COUNT,
+                                 candidate);
+    if (repair < 0) return false;
+    model->dim_seconds = candidate;
+    model->screen_off_seconds = LANLAN_SCREEN_OFF_STEPS_SECONDS[repair];
+    return true;
 }
 
 /* ----------------------------------------------------------- view model -- */
@@ -370,12 +490,67 @@ const char *lanlan_view_settings_row_label(int row) {
         LANLAN_STR_SETTINGS_ROW_MUTE,
         LANLAN_STR_SETTINGS_ROW_REMINDER_SOUND,
         LANLAN_STR_SETTINGS_ROW_REMINDER_LIST,
+        LANLAN_STR_SETTINGS_ROW_DIM,
+        LANLAN_STR_SETTINGS_ROW_SCREEN_OFF,
         LANLAN_STR_SETTINGS_ROW_TIMEZONE,
         LANLAN_STR_SETTINGS_ROW_SYNC,
         LANLAN_STR_SETTINGS_ROW_STORAGE,
     };
     if (row < 0 || row >= LANLAN_SETTINGS_ROW_COUNT) return "";
     return s_rows[row];
+}
+
+/* The generated table carries one exact literal per allowed step, so the UI
+ * never concatenates a number and a unit itself. Each row has its own table:
+ * 60 and 120 seconds belong to both step sets but read differently per row. */
+const char *lanlan_view_dim_text(int seconds) {
+    static const char *const s_text[LANLAN_DIM_STEP_COUNT] = {
+        LANLAN_STR_SETTINGS_VALUE_DIM_15S,
+        LANLAN_STR_SETTINGS_VALUE_DIM_30S,
+        LANLAN_STR_SETTINGS_VALUE_DIM_60S,
+        LANLAN_STR_SETTINGS_VALUE_DIM_120S,
+    };
+    int index = lanlan_model_dim_step_index(seconds);
+    return index >= 0 ? s_text[index] : "";
+}
+
+const char *lanlan_view_screen_off_text(int seconds) {
+    static const char *const s_text[LANLAN_SCREEN_OFF_STEP_COUNT] = {
+        LANLAN_STR_SETTINGS_VALUE_SCREEN_OFF_60S,
+        LANLAN_STR_SETTINGS_VALUE_SCREEN_OFF_90S,
+        LANLAN_STR_SETTINGS_VALUE_SCREEN_OFF_180S,
+        LANLAN_STR_SETTINGS_VALUE_SCREEN_OFF_300S,
+    };
+    int index = lanlan_model_screen_off_step_index(seconds);
+    return index >= 0 ? s_text[index] : "";
+}
+
+const char *lanlan_view_timeout_text(int seconds) {
+    const char *text = lanlan_view_dim_text(seconds);
+    return text[0] != '\0' ? text : lanlan_view_screen_off_text(seconds);
+}
+
+const char *lanlan_view_settings_row_value_text(const lanlan_model_t *model, int row) {
+    if (!model || row < 0 || row >= LANLAN_SETTINGS_ROW_COUNT) return "";
+    switch ((lanlan_settings_row_t)row) {
+    case LANLAN_SETTINGS_ROW_MUTE:
+        return model->globally_muted ? LANLAN_STR_SETTINGS_VALUE_ON : LANLAN_STR_SETTINGS_VALUE_OFF;
+    case LANLAN_SETTINGS_ROW_REMINDER_SOUND:
+        return model->reminder_sound_enabled ? LANLAN_STR_SETTINGS_VALUE_ON
+                                             : LANLAN_STR_SETTINGS_VALUE_OFF;
+    case LANLAN_SETTINGS_ROW_DIM:
+        return lanlan_view_dim_text(model->dim_seconds);
+    case LANLAN_SETTINGS_ROW_SCREEN_OFF:
+        return lanlan_view_screen_off_text(model->screen_off_seconds);
+    case LANLAN_SETTINGS_ROW_REFRESH:
+    case LANLAN_SETTINGS_ROW_REMINDER_LIST:
+    case LANLAN_SETTINGS_ROW_TIMEZONE:
+    case LANLAN_SETTINGS_ROW_SYNC:
+    case LANLAN_SETTINGS_ROW_STORAGE:
+    case LANLAN_SETTINGS_ROW_COUNT:
+        break;
+    }
+    return "";
 }
 
 const char *lanlan_view_home_entry_label(int entry) {

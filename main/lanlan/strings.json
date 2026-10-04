@@ -51,7 +51,19 @@
     "row_sync": "同步信息",
     "row_storage": "存储状态",
     "value_on": "开",
-    "value_off": "关"
+    "value_off": "关",
+    "row_dim": "调暗",
+    "row_screen_off": "熄屏",
+    "dim_minutes": "分钟",
+    "dim_seconds": "秒",
+    "value_dim_15s": "15 秒",
+    "value_dim_30s": "30 秒",
+    "value_dim_60s": "1 分钟",
+    "value_dim_120s": "2 分钟",
+    "value_screen_off_60s": "60 秒",
+    "value_screen_off_90s": "90 秒",
+    "value_screen_off_180s": "3 分钟",
+    "value_screen_off_300s": "5 分钟"
   },
   "reminders": {
     "empty": "还没有提醒",
@@ -134,5 +146,16 @@
     "amount_unknown": "未记录数量",
     "date_month_unit": "月",
     "date_day_unit": "日"
+  },
+  "hints": {
+    "up_down": "上下",
+    "select": "选择",
+    "ok": "OK",
+    "confirm": "确认",
+    "long_press": "长按",
+    "back": "返回"
+  },
+  "hint_bar": {
+    "bar": "上下选择·OK确认·长按返回"
   }
 }

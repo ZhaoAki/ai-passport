@@ -69,7 +69,6 @@
     nodes.loginForm = byId("login-form");
     nodes.loginError = byId("login-error");
     nodes.loginSubmit = byId("login-submit");
-    nodes.overviewTitle = byId("overview-title");
     nodes.overviewServerTime = byId("overview-server-time");
     nodes.summaryCounts = byId("summary-counts");
     nodes.summaryLatest = byId("summary-latest");
@@ -557,8 +556,8 @@
         return;
       }
       var data = result.data;
-      nodes.overviewTitle.textContent = data.date ? data.date + " 今天" : "今天";
       nodes.overviewServerTime.textContent =
+        (data.date ? data.date + " · " : "") +
         "服务器时间 " + formatLocalShort(data.server_time) +
         "（家庭时区 " + text(data.timezone) + "，UTC" +
         (data.utc_offset_minutes >= 0 ? "+" : "") + String(data.utc_offset_minutes / 60) + "）";
@@ -678,7 +677,7 @@
     state.formId = newRequestId();
     state.formDirty = false;
     state.step = 0;
-    nodes.recordTitle.textContent = "记录";
+    nodes.recordTitle.textContent = "记一笔";
     nodes.recordForm.reset();
     nodes.recordCategory.value = "meal";
     nodes.recordEstimated.checked = false;
@@ -1183,7 +1182,7 @@
         return;
       }
       if (!result.ok || !result.data) {
-        showError(nodes.profileFeedback, errorMessage(result.data, "无法读取资料。"));
+        showError(nodes.profileFeedback, errorMessage(result.data, "无法读取档案。"));
         return;
       }
       var profile = result.data.profile || {};

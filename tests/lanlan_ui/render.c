@@ -19,7 +19,24 @@
  * A code point that is in the frozen inventory and has no glyph is a hard
  * failure (non-zero exit). A code point outside it is caller-supplied free
  * text, which the design renders with the placeholder on purpose; it is
- * reported as FREE-FORM and does not fail the run. */
+ * reported as FREE-FORM and does not fail the run.
+ *
+ * Usage:
+ *
+ *   lanlan_ui_preview <output-dir>            # 16 PPM screen captures (default)
+ *   lanlan_ui_preview <output-dir> --stress   # captures + the A12 stress run
+ *
+ * The stress run is the host-only half of acceptance item A12 ("stability with
+ * the network, audio and animation active"): it drives the seven screens and the
+ * real lanlan_model_handle_key() state machine for >= 500 page switches and
+ * >= 1000 key events with LVGL rendering on, samples the LVGL pool, the process
+ * heap and the live object count before/during/after, and exits non-zero when
+ * the free pool, the largest free block or the live object count does not return
+ * to the pre-run baseline. The animation path is kept live by calling
+ * lanlan_ui_companion_react()/lanlan_ui_companion_bark() and lv_timer_handler()
+ * while the companion page is shown. Every number it prints is a HOST
+ * measurement of the ESP-IDF-independent UI and model code, not a device
+ * measurement. */
 #include "lanlan_ui.h"
 
 #include "lanlan_cache.h"
@@ -36,6 +53,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#include <sys/resource.h>
+
+#if defined(__APPLE__)
+#include <malloc/malloc.h> /* malloc_zone_statistics: the mallinfo equivalent here */
+#elif defined(__GLIBC__)
+#include <malloc.h> /* mallinfo2 / mallinfo */
+#endif
 
 LV_FONT_DECLARE(lanlan_font_16);
 LV_FONT_DECLARE(lanlan_font_24);
@@ -49,6 +75,7 @@ static uint16_t s_frame[UI_W * UI_H];
 static uint16_t s_buffer[UI_W * 40];
 static lv_display_t *s_display;
 static lv_obj_t *s_screen;
+static lanlan_records_view_t *s_view; /* mutable: the stress run keeps it in step with the model */
 static const char *s_output_dir;
 
 static unsigned s_captures;
@@ -57,14 +84,31 @@ static unsigned s_labels;
 static unsigned s_missing;
 static unsigned s_freeform;
 static unsigned s_layout_warnings;
+static unsigned s_layout_printed;
+static unsigned s_flushes; /* display flush callbacks: proves pixels were rendered */
+static bool s_audit_labels = true; /* glyph audit on every inspect() */
 
 static int64_t s_today; /* local day index of the synthetic "today" */
+
+/* ------------------------------------------------------------ host clock -- */
+
+/* The firmware feeds lv_tick_inc() from a periodic timer. On the host nothing
+ * advances LVGL's internal counter, so the sprite timer would never fire and the
+ * companion animation would stay frozen. A monotonic millisecond callback makes
+ * lv_tick_get() behave like the device. It does not change the captures: the
+ * screens are rendered synchronously and no screen starts an LVGL animation. */
+static uint32_t host_tick_cb(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint32_t)((uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u);
+}
 
 /* ------------------------------------------------------------ display I/O -- */
 
 static void flush(lv_display_t *display, const lv_area_t *area, uint8_t *pixels) {
     const uint16_t *data = (const uint16_t *)pixels;
     unsigned stride = (unsigned)(area->x2 - area->x1 + 1);
+    ++s_flushes;
     for (int y = area->y1; y <= area->y2; ++y) {
         for (int x = area->x1; x <= area->x2; ++x) {
             if (x < 0 || x >= UI_W || y < 0 || y >= UI_H) continue;
@@ -196,7 +240,8 @@ static void audit_string_table(void) {
 
 static void audit_view_strings(const lanlan_records_view_t *view, const lanlan_local_now_t *now,
                                const lanlan_caregiver_table_t *caregivers,
-                               const lanlan_caregiver_table_t *fallback_caregivers) {
+                               const lanlan_caregiver_table_t *fallback_caregivers,
+                               const lanlan_model_t *model) {
     char context[128];
     char text[256];
 
@@ -207,6 +252,19 @@ static void audit_view_strings(const lanlan_records_view_t *view, const lanlan_l
     for (int row = 0; row < LANLAN_SETTINGS_ROW_COUNT; ++row) {
         snprintf(context, sizeof(context), "settings row label %d", row);
         audit_both(lanlan_view_settings_row_label(row), context);
+        snprintf(context, sizeof(context), "settings row value %d", row);
+        audit_both(lanlan_view_settings_row_value_text(model, row), context);
+    }
+    for (int i = 0; i < LANLAN_DIM_STEP_COUNT; ++i) {
+        snprintf(context, sizeof(context), "dim step %d", LANLAN_DIM_STEPS_SECONDS[i]);
+        audit_both(lanlan_view_dim_text(LANLAN_DIM_STEPS_SECONDS[i]), context);
+        audit_both(lanlan_view_timeout_text(LANLAN_DIM_STEPS_SECONDS[i]), context);
+    }
+    for (int i = 0; i < LANLAN_SCREEN_OFF_STEP_COUNT; ++i) {
+        snprintf(context, sizeof(context), "screen-off step %d",
+                 LANLAN_SCREEN_OFF_STEPS_SECONDS[i]);
+        audit_both(lanlan_view_screen_off_text(LANLAN_SCREEN_OFF_STEPS_SECONDS[i]), context);
+        audit_both(lanlan_view_timeout_text(LANLAN_SCREEN_OFF_STEPS_SECONDS[i]), context);
     }
     for (int entry = 0; entry < LANLAN_HOME_ENTRY_COUNT; ++entry) {
         snprintf(context, sizeof(context), "home entry label %d", entry);
@@ -285,13 +343,15 @@ static void inspect(lv_obj_t *obj) {
         const char *font_name = (font == &lanlan_font_24)   ? "lanlan_font_24"
                                 : (font == &lanlan_font_16) ? "lanlan_font_16"
                                                             : "unexpected-font";
-        audit_text(font, font_name, text, "rendered label");
+        if (s_audit_labels) audit_text(font, font_name, text, "rendered label");
         lv_area_t area;
         lv_obj_get_coords(obj, &area);
         if (area.x1 < 0 || area.x2 >= UI_W || area.y1 < 0 || area.y2 >= UI_H) {
-            printf("LAYOUT label outside screen: '%s' (%d,%d)-(%d,%d)\n", text, (int)area.x1,
-                   (int)area.y1, (int)area.x2, (int)area.y2);
             ++s_layout_warnings;
+            if (s_layout_printed++ < 20) {
+                printf("LAYOUT label outside screen: '%s' (%d,%d)-(%d,%d)\n", text, (int)area.x1,
+                       (int)area.y1, (int)area.x2, (int)area.y2);
+            }
         }
         lv_obj_t *parent = lv_obj_get_parent(obj);
         if (parent) {
@@ -299,11 +359,13 @@ static void inspect(lv_obj_t *obj) {
             lv_obj_get_coords(parent, &bounds);
             if (area.x1 < bounds.x1 || area.x2 > bounds.x2 || area.y1 < bounds.y1
                 || area.y2 > bounds.y2) {
-                printf("LAYOUT label outside parent: '%s' (%d,%d)-(%d,%d) not inside "
-                       "(%d,%d)-(%d,%d)\n",
-                       text, (int)area.x1, (int)area.y1, (int)area.x2, (int)area.y2,
-                       (int)bounds.x1, (int)bounds.y1, (int)bounds.x2, (int)bounds.y2);
                 ++s_layout_warnings;
+                if (s_layout_printed++ < 20) {
+                    printf("LAYOUT label outside parent: '%s' (%d,%d)-(%d,%d) not inside "
+                           "(%d,%d)-(%d,%d)\n",
+                           text, (int)area.x1, (int)area.y1, (int)area.x2, (int)area.y2,
+                           (int)bounds.x1, (int)bounds.y1, (int)bounds.x2, (int)bounds.y2);
+                }
             }
         }
     }
@@ -312,6 +374,15 @@ static void inspect(lv_obj_t *obj) {
 }
 
 /* --------------------------------------------------------------- capturing -- */
+
+/* One full UI rebuild + software render without writing a file. The stress run
+ * uses this so "rendering on" means exactly what the capture path does. */
+static void render_only(const lanlan_ui_state_t *state) {
+    lanlan_ui_render(s_screen, state);
+    lv_obj_update_layout(s_screen);
+    lv_refr_now(s_display);
+    ++s_renders;
+}
 
 static void capture(const char *name, const lanlan_ui_state_t *state) {
     lanlan_ui_render(s_screen, state);
@@ -580,11 +651,698 @@ static void build_view(lanlan_records_view_t *view, const lanlan_cache_t *cache,
     view->battery_percent = battery_percent;
 }
 
+/* ================================================================== stress ==
+ *
+ * Host stability evidence for acceptance item A12. Everything below drives the
+ * real UI/model code; nothing reimplements it. All figures are host numbers.
+ *
+ * Workload
+ *   - page switching: 80 cycles over the eight-step sequence
+ *       HOME, RECORDS, DETAIL(compact), DETAIL(full), COMPANION, SETTINGS,
+ *       REMINDERS, STATUS
+ *     which is 560 page switches (>= 500), enters and leaves both the record
+ *     detail and the reminder list, and switches compact/full twice per cycle.
+ *   - key events: 80 cycles of 20 key slots through lanlan_model_handle_key(),
+ *     including up/down clicks, OK click, OK double click, OK long press and
+ *     screen-off wake sequences (power off, the waking gesture, then the same
+ *     gesture again), which is 2160 delivered events (>= 1000).
+ *   - the wake contract is asserted, not assumed: with the display off EVERY
+ *     key must return WAKE_ONLY and change nothing at all (the model is compared
+ *     byte for byte against a pre-wake copy), the next gesture must behave
+ *     exactly like the same gesture on a model that was never turned off, and a
+ *     gesture delivered while the display is on (including dimmed, which keeps
+ *     the model active) must never be consumed.
+ *   - animation: while the companion page is shown the harness calls
+ *     lanlan_ui_companion_react()/bark() and runs lv_timer_handler() so the
+ *     sprite timer path is exercised.
+ *   - every render is a full lanlan_ui_render() + layout + lv_refr_now(), with
+ *     the model's list windows copied into the view the way the application
+ *     does before each render.
+ *
+ * Stability assertions (exit non-zero on failure, with the exact numbers):
+ *   - LVGL free pool after the run must not be below the pre-run baseline,
+ *   - the largest free block must not be below the pre-run baseline,
+ *   - the live object count must not exceed the pre-run baseline.
+ * The tolerance is deliberately zero bytes / zero objects: the before and after
+ * samples are taken after rebuilding the identical baseline screen, so the
+ * allocator is deterministic. A relaxation here would hide exactly the leak
+ * this run exists to find; investigating a difference is the intended path. */
+
+#define STRESS_TOLERANCE_FREE_BYTES 0
+#define STRESS_TOLERANCE_LARGEST_BYTES 0
+#define STRESS_TOLERANCE_OBJECTS 0
+
+#define STRESS_CYCLES 80
+#define STRESS_KEYS_PER_CYCLE 20
+#define STRESS_PAGE_STEPS 8
+
+typedef struct {
+    size_t lvgl_total;
+    size_t lvgl_free;
+    size_t lvgl_used;
+    size_t lvgl_max_used;
+    size_t lvgl_largest_free;
+    unsigned lvgl_free_blocks;
+    unsigned lvgl_used_blocks;
+    unsigned lvgl_frag_pct;
+    unsigned lvgl_used_pct;
+    unsigned objects;
+    size_t heap_in_use;
+    size_t heap_allocated;
+    unsigned heap_blocks;
+    long peak_rss_bytes;
+} usage_sample_t;
+
+typedef struct {
+    usage_sample_t before;
+    usage_sample_t after;
+    usage_sample_t worst; /* min free / min largest / max used / max frag / max objects */
+    unsigned switches;
+    unsigned keys;
+    unsigned renders;
+    unsigned wake_sequences;
+    unsigned double_clicks;
+    unsigned page_visits[LANLAN_PAGE_STATUS + 1];
+    unsigned page_objects_max[LANLAN_PAGE_STATUS + 1]; /* per screen, for leak attribution */
+    unsigned detail_compact;
+    unsigned detail_full;
+    unsigned flushes;
+    unsigned min_free_render;   /* where the free pool was lowest */
+    lanlan_page_t min_free_page;
+    unsigned max_objects_render; /* where the live object count peaked */
+    lanlan_page_t max_objects_page;
+    lanlan_page_t last_page;
+    bool invariants_ok;
+} stress_report_t;
+
+/* Every object reachable from the application screen, the active screen and the
+ * three display layers. The UI creates all of its widgets under the application
+ * screen, so a widget leak anywhere in the UI shows up as growth. */
+static unsigned count_subtree(lv_obj_t *obj) {
+    unsigned total = 1;
+    uint32_t children = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < children; ++i) total += count_subtree(lv_obj_get_child(obj, i));
+    return total;
+}
+
+static unsigned count_objects(void) {
+    lv_obj_t *roots[5];
+    unsigned root_count = 0;
+    roots[root_count++] = s_screen;
+    roots[root_count++] = lv_display_get_screen_active(s_display);
+    roots[root_count++] = lv_display_get_layer_top(s_display);
+    roots[root_count++] = lv_display_get_layer_sys(s_display);
+    roots[root_count++] = lv_display_get_layer_bottom(s_display);
+    unsigned total = 0;
+    for (unsigned i = 0; i < root_count; ++i) {
+        if (!roots[i]) continue;
+        bool duplicate = false;
+        for (unsigned j = 0; j < i; ++j) {
+            if (roots[j] == roots[i]) duplicate = true;
+        }
+        if (duplicate) continue;
+        total += count_subtree(roots[i]);
+    }
+    return total;
+}
+
+static void sample_usage(usage_sample_t *out, bool with_process_heap) {
+    memset(out, 0, sizeof(*out));
+    lv_mem_monitor_t monitor;
+    memset(&monitor, 0, sizeof(monitor));
+    lv_mem_monitor(&monitor);
+    out->lvgl_total = monitor.total_size;
+    out->lvgl_free = monitor.free_size;
+    out->lvgl_used = monitor.total_size - monitor.free_size;
+    out->lvgl_max_used = monitor.max_used;
+    out->lvgl_largest_free = monitor.free_biggest_size;
+    out->lvgl_free_blocks = (unsigned)monitor.free_cnt;
+    out->lvgl_used_blocks = (unsigned)monitor.used_cnt;
+    out->lvgl_frag_pct = monitor.frag_pct;
+    out->lvgl_used_pct = monitor.used_pct;
+    out->objects = count_objects();
+
+    if (with_process_heap) {
+#if defined(__APPLE__)
+        malloc_statistics_t stats;
+        memset(&stats, 0, sizeof(stats));
+        malloc_zone_statistics(malloc_default_zone(), &stats);
+        out->heap_in_use = stats.size_in_use;
+        out->heap_allocated = stats.size_allocated;
+        out->heap_blocks = stats.blocks_in_use;
+#elif defined(__GLIBC__)
+#if defined(__GLIBC_PREREQ)
+#if __GLIBC_PREREQ(2, 33)
+        struct mallinfo2 info = mallinfo2();
+        out->heap_in_use = info.uordblks;
+        out->heap_allocated = info.arena;
+        out->heap_blocks = (unsigned)info.hblks;
+#else
+        struct mallinfo info = mallinfo();
+        out->heap_in_use = (size_t)info.uordblks;
+        out->heap_allocated = (size_t)info.arena;
+        out->heap_blocks = (unsigned)info.hblks;
+#endif
+#endif
+#endif
+        struct rusage usage;
+        memset(&usage, 0, sizeof(usage));
+        if (getrusage(RUSAGE_SELF, &usage) == 0) {
+#if defined(__APPLE__)
+            out->peak_rss_bytes = usage.ru_maxrss; /* macOS reports bytes */
+#else
+            out->peak_rss_bytes = usage.ru_maxrss * 1024; /* Linux reports KiB */
+#endif
+        }
+    }
+}
+
+static void stress_track(stress_report_t *report, const usage_sample_t *sample) {
+    /* The worst sample keeps the minimum of every "must not shrink" figure and
+     * the maximum of every "must not grow" figure, together with the render
+     * index and screen it happened on so a failure can name the iteration. */
+    if (sample->lvgl_free < report->worst.lvgl_free) {
+        report->worst.lvgl_free = sample->lvgl_free;
+        report->min_free_render = report->renders;
+        report->min_free_page = report->last_page;
+    }
+    if (sample->lvgl_largest_free < report->worst.lvgl_largest_free) {
+        report->worst.lvgl_largest_free = sample->lvgl_largest_free;
+    }
+    if (sample->lvgl_used > report->worst.lvgl_used) report->worst.lvgl_used = sample->lvgl_used;
+    if (sample->lvgl_max_used > report->worst.lvgl_max_used) {
+        report->worst.lvgl_max_used = sample->lvgl_max_used;
+    }
+    if (sample->lvgl_frag_pct > report->worst.lvgl_frag_pct) {
+        report->worst.lvgl_frag_pct = sample->lvgl_frag_pct;
+    }
+    if (sample->objects > report->worst.objects) {
+        report->worst.objects = sample->objects;
+        report->max_objects_render = report->renders;
+        report->max_objects_page = report->last_page;
+    }
+    if (sample->heap_in_use > report->worst.heap_in_use) {
+        report->worst.heap_in_use = sample->heap_in_use;
+    }
+    if (sample->peak_rss_bytes > report->worst.peak_rss_bytes) {
+        report->worst.peak_rss_bytes = sample->peak_rss_bytes;
+    }
+}
+
+/* Samples the pool and the object count after one stress render. The full
+ * process-heap sample (a syscall plus the allocator's statistics) runs every
+ * eighth render so the per-iteration cost stays sane while still catching a
+ * leak early enough to name the iteration. */
+static usage_sample_t stress_sample(stress_report_t *report) {
+    usage_sample_t sample;
+    sample_usage(&sample, report->renders % 8 == 0);
+    stress_track(report, &sample);
+    if (sample.lvgl_free < 2048) {
+        fprintf(stderr, "STRESS FAILURE: LVGL pool nearly exhausted on render %u (%u bytes free)\n",
+                report->renders, (unsigned)sample.lvgl_free);
+        exit(1);
+    }
+    return sample;
+}
+
+static void stress_after_render(lanlan_model_t *model, stress_report_t *report) {
+    ++report->renders;
+    if (model->page >= 0 && model->page <= LANLAN_PAGE_STATUS) ++report->page_visits[model->page];
+    if (model->page != report->last_page) {
+        ++report->switches;
+        report->last_page = model->page;
+    }
+    if (report->renders % 16 == 0) {
+        lv_timer_handler(); /* let the companion sprite timer fire */
+    }
+    if (report->renders % 64 == 0) {
+        /* Keep some geometry coverage in the stress path without paying the
+         * glyph audit (already done by the captures) on every iteration. */
+        bool keep = s_audit_labels;
+        s_audit_labels = false;
+        inspect(s_screen);
+        s_audit_labels = keep;
+    }
+    usage_sample_t sample = stress_sample(report);
+    if (model->page >= 0 && model->page <= LANLAN_PAGE_STATUS
+        && sample.objects > report->page_objects_max[model->page]) {
+        report->page_objects_max[model->page] = sample.objects;
+    }
+}
+
+/* The application copies the model's list windows into the view before every
+ * render (main/main.c:509-510), because lanlan_view_reminder_rows() fills the
+ * window that starts at view->reminder_offset while the renderer draws the rows
+ * at model->reminder_offset. Mirror that so the drawn rows and their text always
+ * describe the same window. */
+static void stress_sync_view_offsets(const lanlan_model_t *model) {
+    if (!s_view) return;
+    s_view->list_offset = model->list_offset;
+    s_view->reminder_offset = model->reminder_offset;
+}
+
+/* One stress render: keep the view windows aligned, draw, then sample. */
+static void stress_render(lanlan_model_t *model, lanlan_ui_state_t *state,
+                          stress_report_t *report) {
+    stress_sync_view_offsets(model);
+    render_only(state);
+    stress_after_render(model, report);
+}
+
+static void stress_select_content(lanlan_model_t *model, lanlan_ui_state_t *state, unsigned cycle,
+                                  unsigned step) {
+    int records = (int)model->cache.record_count;
+    int reminders = (int)model->cache.reminder_count;
+    model->home_entry = (lanlan_home_entry_t)(cycle % LANLAN_HOME_ENTRY_COUNT);
+    model->settings_row = (lanlan_settings_row_t)((cycle + step) % LANLAN_SETTINGS_ROW_COUNT);
+    model->record_index = records > 0 ? (int)((cycle * 3u + step) % (unsigned)records) : 0;
+    model->list_offset = lanlan_view_clamp_offset(records, model->record_index - 1,
+                                                  LANLAN_MODEL_LIST_ROWS);
+    model->reminder_index = reminders > 0 ? (int)((cycle + step) % (unsigned)reminders) : 0;
+    model->reminder_offset = lanlan_view_clamp_offset(reminders, model->reminder_index - 1,
+                                                      LANLAN_MODEL_LIST_ROWS);
+    model->character = (lanlan_character_t)(cycle % LANLAN_CHARACTER_COUNT);
+
+    /* Exercise the two writable timeout rows and the toggles through the real
+     * setters, so the settings page renders every value it can show. */
+    int dim = LANLAN_DIM_STEPS_SECONDS[cycle % LANLAN_DIM_STEP_COUNT];
+    int off = LANLAN_SCREEN_OFF_STEPS_SECONDS[(cycle + step) % LANLAN_SCREEN_OFF_STEP_COUNT];
+    if (!lanlan_model_set_timeouts(model, dim, off)) {
+        (void)lanlan_model_set_timeouts(
+            model, model->dim_seconds,
+            LANLAN_SCREEN_OFF_STEPS_SECONDS[LANLAN_SCREEN_OFF_STEP_COUNT - 1]);
+    }
+    model->globally_muted = (cycle % 3u) == 0u;
+    model->reminder_sound_enabled = (cycle % 5u) != 0u;
+
+    static const int k_batteries[] = {78, -1, 30, 100, 0};
+    static const char *const k_status[] = {LANLAN_STR_STATUS_OK, LANLAN_STR_STATUS_OFFLINE,
+                                           LANLAN_STR_STATUS_CREDENTIAL_REJECTED};
+    state->battery_percent = k_batteries[cycle % (sizeof(k_batteries) / sizeof(k_batteries[0]))];
+    state->status_text = k_status[cycle % (sizeof(k_status) / sizeof(k_status[0]))];
+    state->status_color = state->battery_percent < 0 ? 0xC4762Bu : 0x3AA76Du;
+    state->secure_url = (cycle % 4u) != 0u;
+    state->cache_rebuilt = (cycle % 7u) == 0u;
+    state->storage_limited = (cycle % 11u) == 0u;
+    state->status_detail = (cycle % 5u) == 0u ? LANLAN_STR_ERRORS_NETWORK : NULL;
+    state->banner_text = (cycle % 13u) == 0u ? LANLAN_STR_REMINDERS_DUE : NULL;
+}
+
+/* Rebuilds the exact screen state the pre-run sample was taken on, so the
+ * before/after object counts and pool figures are directly comparable. */
+static void stress_baseline(lanlan_model_t *model, lanlan_ui_state_t *state,
+                            const lanlan_caregiver_table_t *caregivers) {
+    model->page = LANLAN_PAGE_HOME;
+    model->home_entry = LANLAN_HOME_ENTRY_TODAY;
+    model->record_index = 0;
+    model->list_offset = 0;
+    model->detail_full = 0;
+    model->settings_row = LANLAN_SETTINGS_ROW_REFRESH;
+    model->reminder_index = 0;
+    model->reminder_offset = 0;
+    model->character = LANLAN_CHARACTER_IDLE;
+    model->companion_mood = 0;
+    model->active = true;
+    model->globally_muted = false;
+    model->reminder_sound_enabled = true;
+    model->utc_offset_min = UI_TZ_OFFSET_MIN;
+    (void)lanlan_model_set_timeouts(model, LANLAN_TIMEOUT_DIM_DEFAULT_SECONDS,
+                                    LANLAN_TIMEOUT_SCREEN_OFF_DEFAULT_SECONDS);
+    state->battery_percent = 78;
+    state->status_text = LANLAN_STR_STATUS_OK;
+    state->status_color = 0x3AA76Du;
+    state->status_detail = NULL;
+    state->cache_rebuilt = false;
+    state->storage_limited = false;
+    state->secure_url = true;
+    state->banner_text = NULL;
+    state->caregivers = caregivers;
+    stress_sync_view_offsets(model);
+    render_only(state);
+}
+
+/* True when the two model states are byte-identical. Both are copies of the
+ * same original, so the padding matches and memcmp is exact; this is the same
+ * comparison tests/test_lanlan_model.c (test_wake_only_first_gesture) uses. */
+static bool stress_model_equal(const lanlan_model_t *want, const lanlan_model_t *got) {
+    return memcmp(want, got, sizeof(*want)) == 0;
+}
+
+/* Names every differing field, so an invariant failure points at the field that
+ * moved instead of only saying "different". */
+static void stress_model_diff(const lanlan_model_t *want, const lanlan_model_t *got) {
+    printf("STRESS INVARIANT: model state differs from the reference:");
+#define STRESS_DIFF(field) \
+    if (want->field != got->field) printf(" " #field "=%d->%d", (int)want->field, (int)got->field)
+    STRESS_DIFF(page);
+    STRESS_DIFF(home_entry);
+    STRESS_DIFF(record_index);
+    STRESS_DIFF(list_offset);
+    STRESS_DIFF(detail_full);
+    STRESS_DIFF(character);
+    STRESS_DIFF(companion_mood);
+    STRESS_DIFF(settings_row);
+    STRESS_DIFF(reminder_index);
+    STRESS_DIFF(reminder_offset);
+    STRESS_DIFF(globally_muted);
+    STRESS_DIFF(reminder_sound_enabled);
+    STRESS_DIFF(dim_seconds);
+    STRESS_DIFF(screen_off_seconds);
+    STRESS_DIFF(utc_offset_min);
+    STRESS_DIFF(active);
+    STRESS_DIFF(clock_trusted);
+#undef STRESS_DIFF
+    if (memcmp(&want->now, &got->now, sizeof(want->now)) != 0) printf(" now");
+    if (memcmp(&want->cache, &got->cache, sizeof(want->cache)) != 0) printf(" cache");
+    printf("\n");
+}
+
+/* One key event delivered with the display ON. "On" includes the dimmed state:
+ * dimming only lowers the backlight, the model stays active, and the wake rule
+ * must therefore never consume the gesture. `woke_screen` is informational, so
+ * the harness alternates it to prove the model cannot be told to swallow a
+ * gesture by a caller's flag. Returns the model's action. */
+static lanlan_action_t stress_deliver_active_key(lanlan_model_t *model,
+                                                 lanlan_ui_state_t *state, lanlan_key_t key,
+                                                 stress_report_t *report) {
+    if (!model->active) {
+        printf("STRESS INVARIANT: the harness delivered key %d as an active-display key while "
+               "the model was off\n",
+               (int)key);
+        report->invariants_ok = false;
+    }
+    lanlan_key_event_t event;
+    event.key = key;
+    event.woke_screen = (report->keys & 1u) != 0u; /* informational only */
+    lanlan_action_t action = lanlan_model_handle_key(model, &event);
+    ++report->keys;
+    if (action == LANLAN_ACTION_WAKE_ONLY) {
+        printf("STRESS INVARIANT: key %d on page %d was consumed as a wake gesture while the "
+               "display was on (a dimmed display is still active)\n",
+               (int)key, (int)model->page);
+        report->invariants_ok = false;
+    }
+    if (lanlan_action_is_record_write(action)) {
+        printf("STRESS INVARIANT: key %d on page %d produced a forbidden record write (%d)\n",
+               (int)key, (int)model->page, (int)action);
+        report->invariants_ok = false;
+    }
+    if (lanlan_model_pending_record_action(model)) {
+        printf("STRESS INVARIANT: a pending record action survived key %d on page %d\n", (int)key,
+               (int)model->page);
+        report->invariants_ok = false;
+    }
+    if (action == LANLAN_ACTION_COMPANION_PET) {
+        lanlan_ui_companion_react(LANLAN_CHARACTER_HAPPY);
+    }
+    stress_render(model, state, report);
+    return action;
+}
+
+/* Screen-off wake sequence: the display goes off, the waking gesture is
+ * delivered, then the same gesture is delivered again with the display on.
+ *
+ * Contract (main/lanlan_model.c, tests/test_lanlan_model.c:316+): while the
+ * display is off EVERY key and event is consumed and only turns the display on,
+ * so page, selection, settings and companion state are all unchanged. The rule
+ * belongs to the model, so `woke_screen` cannot influence it. */
+static void stress_wake_sequence(lanlan_model_t *model, lanlan_ui_state_t *state, lanlan_key_t key,
+                                 stress_report_t *report) {
+    /* The state the model must come back to: it is active here, and the waking
+     * gesture may change nothing except that flag. */
+    lanlan_model_t reference = *model;
+    lanlan_model_set_active(model, false);
+
+    lanlan_key_event_t event;
+    event.key = key;
+    event.woke_screen = true; /* informational; the model owns the rule */
+    lanlan_action_t wake_action = lanlan_model_handle_key(model, &event);
+    ++report->keys;
+    ++report->wake_sequences;
+    if (wake_action != LANLAN_ACTION_WAKE_ONLY) {
+        printf("STRESS INVARIANT: the waking gesture (key %d on page %d) returned action %d, "
+               "expected WAKE_ONLY\n",
+               (int)key, (int)reference.page, (int)wake_action);
+        report->invariants_ok = false;
+    }
+    if (!model->active) {
+        printf("STRESS INVARIANT: the waking gesture (key %d) left the display off\n", (int)key);
+        report->invariants_ok = false;
+    }
+    if (!stress_model_equal(&reference, model)) {
+        printf("STRESS INVARIANT: the waking gesture (key %d) changed model state\n", (int)key);
+        stress_model_diff(&reference, model);
+        report->invariants_ok = false;
+    }
+    stress_render(model, state, report);
+
+    /* "The next gesture behaves normally" is checked against an oracle: the
+     * same key sent to a copy of the model that was never turned off must give
+     * the same action and the same resulting state. */
+    lanlan_key_event_t follow;
+    follow.key = key;
+    follow.woke_screen = false;
+    lanlan_action_t expected = lanlan_model_handle_key(&reference, &follow);
+    lanlan_action_t actual = stress_deliver_active_key(model, state, key, report);
+    if (actual != expected) {
+        printf("STRESS INVARIANT: the gesture after the wake (key %d) returned action %d, the "
+               "never-off reference returned %d\n",
+               (int)key, (int)actual, (int)expected);
+        report->invariants_ok = false;
+    }
+    if (!stress_model_equal(&reference, model)) {
+        printf("STRESS INVARIANT: the gesture after the wake (key %d) left a different state than "
+               "the never-off reference\n",
+               (int)key);
+        stress_model_diff(&reference, model);
+        report->invariants_ok = false;
+    }
+}
+
+/* 20 key slots per cycle: up/down, OK click, OK double click, OK long press and
+ * screen-off wake sequences (waking gesture then the same gesture again). */
+static void stress_key_cycle(lanlan_model_t *model, lanlan_ui_state_t *state, unsigned cycle,
+                             stress_report_t *report) {
+    static const lanlan_key_t k_keys[STRESS_KEYS_PER_CYCLE] = {
+        LANLAN_KEY_UP,       LANLAN_KEY_DOWN,     LANLAN_KEY_OK_CLICK, LANLAN_KEY_OK_CLICK,
+        LANLAN_KEY_OK_LONG,  LANLAN_KEY_DOWN,     LANLAN_KEY_UP,       LANLAN_KEY_OK_CLICK,
+        LANLAN_KEY_OK_LONG,  LANLAN_KEY_DOWN,     LANLAN_KEY_DOWN,     LANLAN_KEY_OK_CLICK,
+        LANLAN_KEY_UP,       LANLAN_KEY_OK_LONG,  LANLAN_KEY_OK_CLICK, LANLAN_KEY_DOWN,
+        LANLAN_KEY_UP,       LANLAN_KEY_OK_CLICK, LANLAN_KEY_OK_LONG,  LANLAN_KEY_DOWN,
+    };
+    for (unsigned index = 0; index < STRESS_KEYS_PER_CYCLE; ++index) {
+        lanlan_key_t key = k_keys[(index + cycle) % STRESS_KEYS_PER_CYCLE];
+        if ((index % 5u) == 4u) {
+            stress_wake_sequence(model, state, key, report);
+        } else if ((index % 7u) == 3u) {
+            stress_deliver_active_key(model, state, LANLAN_KEY_OK_CLICK, report);
+            stress_deliver_active_key(model, state, LANLAN_KEY_OK_CLICK, report);
+            ++report->double_clicks;
+        } else {
+            stress_deliver_active_key(model, state, key, report);
+        }
+    }
+}
+
+static int stress_run(lanlan_model_t *model, lanlan_ui_state_t *state,
+                      const lanlan_caregiver_table_t *caregivers) {
+    static const lanlan_page_t k_pages[STRESS_PAGE_STEPS] = {
+        LANLAN_PAGE_HOME,     LANLAN_PAGE_RECORDS,  LANLAN_PAGE_DETAIL, LANLAN_PAGE_DETAIL,
+        LANLAN_PAGE_COMPANION, LANLAN_PAGE_SETTINGS, LANLAN_PAGE_REMINDERS, LANLAN_PAGE_STATUS,
+    };
+    stress_report_t report;
+    memset(&report, 0, sizeof(report));
+    report.invariants_ok = true;
+    report.last_page = LANLAN_PAGE_HOME;
+
+    /* Baseline: identical render before and after, so any difference is a leak. */
+    stress_baseline(model, state, caregivers);
+    sample_usage(&report.before, true);
+    report.worst = report.before;
+
+    printf("stress: starting %u page-switch cycles (%u steps) and %u key cycles (%u slots)\n",
+           (unsigned)STRESS_CYCLES, (unsigned)STRESS_PAGE_STEPS, (unsigned)STRESS_CYCLES,
+           (unsigned)STRESS_KEYS_PER_CYCLE);
+
+    bool keep_audit = s_audit_labels;
+    s_audit_labels = false; /* the captures already audited every glyph */
+
+    for (unsigned cycle = 0; cycle < STRESS_CYCLES; ++cycle) {
+        for (unsigned step = 0; step < STRESS_PAGE_STEPS; ++step) {
+            lanlan_page_t page = k_pages[step];
+            if (step == 2u) {
+                model->detail_full = 0; /* enter the compact detail */
+                ++report.detail_compact;
+            }
+            if (step == 3u) {
+                model->detail_full = 1; /* switch to the full detail */
+                ++report.detail_full;
+            }
+            stress_select_content(model, state, cycle, step);
+            model->page = page;
+            stress_render(model, state, &report);
+            if (page == LANLAN_PAGE_COMPANION) {
+                /* Keep the animation path live while the companion is shown. */
+                lanlan_ui_companion_react((cycle % 2u) ? LANLAN_CHARACTER_HAPPY
+                                                       : LANLAN_CHARACTER_BLINK);
+                if ((cycle % 3u) == 0u) lanlan_ui_companion_bark();
+                lv_timer_handler();
+                stress_render(model, state, &report);
+            }
+        }
+    }
+
+    for (unsigned cycle = 0; cycle < STRESS_CYCLES; ++cycle) {
+        stress_key_cycle(model, state, cycle, &report);
+    }
+
+    s_audit_labels = keep_audit;
+    report.flushes = s_flushes;
+
+    /* Return to the exact pre-run screen and sample again. */
+    stress_baseline(model, state, caregivers);
+    sample_usage(&report.after, true);
+
+    printf("STRESS SUMMARY mode=host-lvgl switches=%u keys=%u renders=%u flushes=%u "
+           "wake_sequences=%u double_clicks=%u detail_compact=%u detail_full=%u\n",
+           report.switches, report.keys, report.renders, report.flushes, report.wake_sequences,
+           report.double_clicks, report.detail_compact, report.detail_full);
+    printf("STRESS PAGES home=%u records=%u detail=%u companion=%u settings=%u reminders=%u "
+           "status=%u\n",
+           report.page_visits[LANLAN_PAGE_HOME], report.page_visits[LANLAN_PAGE_RECORDS],
+           report.page_visits[LANLAN_PAGE_DETAIL], report.page_visits[LANLAN_PAGE_COMPANION],
+           report.page_visits[LANLAN_PAGE_SETTINGS], report.page_visits[LANLAN_PAGE_REMINDERS],
+           report.page_visits[LANLAN_PAGE_STATUS]);
+    printf("STRESS PAGE OBJECTS objects_home=%u objects_records=%u objects_detail=%u "
+           "objects_companion=%u objects_settings=%u objects_reminders=%u objects_status=%u\n",
+           report.page_objects_max[LANLAN_PAGE_HOME], report.page_objects_max[LANLAN_PAGE_RECORDS],
+           report.page_objects_max[LANLAN_PAGE_DETAIL],
+           report.page_objects_max[LANLAN_PAGE_COMPANION],
+           report.page_objects_max[LANLAN_PAGE_SETTINGS],
+           report.page_objects_max[LANLAN_PAGE_REMINDERS],
+           report.page_objects_max[LANLAN_PAGE_STATUS]);
+    printf("STRESS LVGL total=%u free_before=%u free_after=%u free_min=%u used_before=%u "
+           "used_after=%u used_max=%u used_pct_after=%u max_used_before=%u max_used_after=%u "
+           "frag_before=%u frag_after=%u frag_max=%u "
+           "largest_before=%u largest_after=%u largest_min=%u free_blocks_after=%u "
+           "used_blocks_after=%u\n",
+           (unsigned)report.before.lvgl_total, (unsigned)report.before.lvgl_free,
+           (unsigned)report.after.lvgl_free, (unsigned)report.worst.lvgl_free,
+           (unsigned)report.before.lvgl_used, (unsigned)report.after.lvgl_used,
+           (unsigned)report.worst.lvgl_used, (unsigned)report.after.lvgl_used_pct,
+           (unsigned)report.before.lvgl_max_used, (unsigned)report.after.lvgl_max_used,
+           report.before.lvgl_frag_pct, report.after.lvgl_frag_pct, report.worst.lvgl_frag_pct,
+           (unsigned)report.before.lvgl_largest_free, (unsigned)report.after.lvgl_largest_free,
+           (unsigned)report.worst.lvgl_largest_free, report.after.lvgl_free_blocks,
+           report.after.lvgl_used_blocks);
+    printf("STRESS OBJECTS objects_before=%u objects_after=%u objects_max=%u "
+           "objects_max_render=%u objects_max_page=%d free_min_render=%u free_min_page=%d\n",
+           report.before.objects, report.after.objects, report.worst.objects,
+           report.max_objects_render, (int)report.max_objects_page, report.min_free_render,
+           (int)report.min_free_page);
+    printf("STRESS PROCESS heap_in_use_before=%u heap_in_use_after=%u heap_in_use_max=%u "
+           "heap_allocated_before=%u heap_allocated_after=%u blocks_in_use_after=%u "
+           "peak_rss_before=%ld peak_rss_after=%ld\n",
+           (unsigned)report.before.heap_in_use, (unsigned)report.after.heap_in_use,
+           (unsigned)report.worst.heap_in_use, (unsigned)report.before.heap_allocated,
+           (unsigned)report.after.heap_allocated, report.after.heap_blocks,
+           report.before.peak_rss_bytes, report.after.peak_rss_bytes);
+
+    int failures = 0;
+    if (report.switches < 500u) {
+        printf("STRESS FAILURE: only %u page switches, need at least 500\n", report.switches);
+        ++failures;
+    }
+    if (report.keys < 1000u) {
+        printf("STRESS FAILURE: only %u key events, need at least 1000\n", report.keys);
+        ++failures;
+    }
+    if (!report.invariants_ok) {
+        printf("STRESS FAILURE: a model invariant check failed during the run\n");
+        ++failures;
+    }
+    if (report.after.lvgl_free + STRESS_TOLERANCE_FREE_BYTES < report.before.lvgl_free) {
+        printf("STRESS FAILURE: LVGL free pool shrank: before=%u after=%u tolerance=%u bytes; "
+               "lowest free figure was %u at render %u on page %d\n",
+               (unsigned)report.before.lvgl_free, (unsigned)report.after.lvgl_free,
+               (unsigned)STRESS_TOLERANCE_FREE_BYTES, (unsigned)report.worst.lvgl_free,
+               report.min_free_render, (int)report.min_free_page);
+        ++failures;
+    }
+    if (report.after.lvgl_largest_free + STRESS_TOLERANCE_LARGEST_BYTES
+        < report.before.lvgl_largest_free) {
+        printf("STRESS FAILURE: largest free block shrank: before=%u after=%u tolerance=%u bytes\n",
+               (unsigned)report.before.lvgl_largest_free, (unsigned)report.after.lvgl_largest_free,
+               (unsigned)STRESS_TOLERANCE_LARGEST_BYTES);
+        ++failures;
+    }
+    if (report.after.objects > report.before.objects + STRESS_TOLERANCE_OBJECTS) {
+        printf("STRESS FAILURE: live LVGL object count grew: before=%u after=%u tolerance=%u; "
+               "peak was %u at render %u on page %d\n",
+               report.before.objects, report.after.objects, (unsigned)STRESS_TOLERANCE_OBJECTS,
+               report.worst.objects, report.max_objects_render, (int)report.max_objects_page);
+        ++failures;
+    }
+    if (failures == 0) {
+        printf("STRESS RESULT PASS\n");
+        return 0;
+    }
+    printf("STRESS RESULT FAIL (%d check%s)\n", failures, failures == 1 ? "" : "s");
+    return 1;
+}
+
+static void usage(void) {
+    fprintf(stderr,
+            "usage: lanlan_ui_preview <output-dir> [--stress]\n"
+            "\n"
+            "  <output-dir>  directory for the 16 screen PPM captures\n"
+            "  --stress      after the captures, run the A12 stability workload:\n"
+            "                >=500 page switches across the seven screens with the\n"
+            "                record-detail compact/full toggle, >=1000 synthetic key\n"
+            "                events through lanlan_model_handle_key (up/down, OK\n"
+            "                click, OK double click, OK long press and screen-off\n"
+            "                wake sequences) with LVGL rendering on, then print the\n"
+            "                LVGL pool, process heap and live-object numbers and\n"
+            "                fail when the pre-run baseline does not return.\n"
+            "\n"
+            "Examples:\n"
+            "  ./lanlan_ui_preview build/lanlan-preview/screens\n"
+            "  ./lanlan_ui_preview build/lanlan-preview/screens --stress\n"
+            "  python3 tools/preview_lanlan.py                      # 16 captures\n"
+            "  python3 tools/preview_lanlan.py --mode stress        # captures + stress\n");
+}
+
 /* -------------------------------------------------------------------- main -- */
 
 int main(int argc, char **argv) {
-    assert(argc == 2);
-    s_output_dir = argv[1];
+    const char *output_dir = NULL;
+    bool stress = false;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--stress") == 0) {
+            stress = true;
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            usage();
+            return 0;
+        } else if (argv[i][0] == '-') {
+            fprintf(stderr, "unknown option '%s'\n", argv[i]);
+            usage();
+            return 2;
+        } else if (output_dir == NULL) {
+            output_dir = argv[i];
+        } else {
+            fprintf(stderr, "unexpected argument '%s'\n", argv[i]);
+            usage();
+            return 2;
+        }
+    }
+    if (output_dir == NULL) {
+        usage();
+        return 2;
+    }
+    s_output_dir = output_dir;
+    /* Keep stdout line-buffered so the driver sees the LAYOUT / STRESS lines in
+     * the order they were produced even when it pipes them. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
     s_today = lanlan_time_days_from_civil(2026, 10, 4);
 
     required_collect();
@@ -611,6 +1369,7 @@ int main(int argc, char **argv) {
     }
 
     lv_init();
+    lv_tick_set_cb(host_tick_cb); /* the host equivalent of the periodic lv_tick_inc */
     s_display = lv_display_create(UI_W, UI_H);
     assert(s_display);
     lv_display_set_color_format(s_display, LV_COLOR_FORMAT_RGB565);
@@ -649,8 +1408,6 @@ int main(int argc, char **argv) {
     build_caregivers(&caregivers);
     build_fallback_caregivers(&fallback_caregivers);
 
-    audit_view_strings(&view, &now, &caregivers, &fallback_caregivers);
-
     lanlan_model_t model;
     lanlan_model_init(&model);
     lanlan_model_load_cache(&model, &cache);
@@ -663,9 +1420,18 @@ int main(int argc, char **argv) {
     model.reminder_index = 0;
     model.reminder_offset = 0;
     model.character = LANLAN_CHARACTER_IDLE;
+    model.companion_mood = 0;
     model.globally_muted = false;
     model.reminder_sound_enabled = true;
     model.utc_offset_min = UI_TZ_OFFSET_MIN;
+    /* The application loads both backlight timeouts from NVS before the first
+     * render; lanlan_model_init() leaves them at 0, which is not a selectable
+     * step, so install the documented defaults. */
+    assert(lanlan_model_set_timeouts(&model, LANLAN_TIMEOUT_DIM_DEFAULT_SECONDS,
+                                     LANLAN_TIMEOUT_SCREEN_OFF_DEFAULT_SECONDS));
+
+    s_view = &view;
+    audit_view_strings(&view, &now, &caregivers, &fallback_caregivers, &model);
 
     lanlan_ui_state_t state;
     memset(&state, 0, sizeof(state));
@@ -801,7 +1567,12 @@ int main(int argc, char **argv) {
                s_freeform);
     }
 
+    int exit_code = s_missing == 0 ? 0 : 1;
+    if (stress) {
+        if (stress_run(&model, &state, &caregivers) != 0) exit_code = 1;
+    }
+
     lanlan_ui_deinit();
     lv_deinit();
-    return s_missing == 0 ? 0 : 1;
+    return exit_code;
 }

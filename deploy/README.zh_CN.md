@@ -1,6 +1,6 @@
 <p align="right"><a href="README.md">English</a> · <strong>简体中文</strong></p>
 
-# 澜澜服务部署说明
+# 懒懒服务部署说明
 
 本目录提供一个两容器部署：由 `services/lanlan/Dockerfile` 构建的服务镜像，以及负责终止
 HTTPS 的 Caddy 反向代理。两个镜像都是公开镜像，不涉及付费或第三方服务。服务只使用

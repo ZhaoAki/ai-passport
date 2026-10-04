@@ -42,10 +42,6 @@ static const char *TAG = "lanlan_ui";
 #define UI_BODY_BOTTOM 288
 #define UI_HINT_Y 292
 
-/* ASCII-only key hint: the frozen string table has no generic "keys" entry, and
- * no Chinese may be introduced outside it. */
-#define UI_HINT_KEYS "UP/DN  OK  HOLD=BACK"
-
 #define UI_ROW_CORNER 10
 #define UI_CARD_CORNER 12
 
@@ -142,6 +138,33 @@ static int ui_wrapped_height(const char *text, int width) {
     return (int)size.y;
 }
 
+/* One list row whose background is drawn by the text object itself, so a row
+ * costs one object instead of two. The settings page needs nine rows plus nine
+ * values in one body band, and keeping the per-render object count low keeps the
+ * LVGL pool's largest free block stable across rebuilds. */
+static lv_obj_t *ui_row_chip(lv_obj_t *parent, int x, int y, int width, int height,
+                             const char *text, bool selected) {
+    lv_obj_t *chip = lv_label_create(parent);
+    if (!chip) return NULL;
+    lv_obj_set_pos(chip, x, y);
+    lv_obj_set_size(chip, width, height);
+    lv_obj_set_style_radius(chip, UI_ROW_CORNER, 0);
+    lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(chip, lv_color_hex(selected ? UI_COLOR_SELECTED : UI_COLOR_CARD), 0);
+    lv_obj_set_style_pad_left(chip, 12, 0);
+    lv_obj_set_style_pad_right(chip, 2, 0);
+    lv_obj_set_style_pad_top(chip, 2, 0);
+    lv_obj_set_style_pad_bottom(chip, 0, 0);
+    lv_obj_set_style_text_font(chip, &lanlan_font_16, 0);
+    lv_obj_set_style_text_color(chip, lv_color_hex(selected ? UI_COLOR_BODY : UI_COLOR_INK), 0);
+    lv_obj_set_style_text_align(chip, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_long_mode(chip, LV_LABEL_LONG_MODE_DOTS);
+    lv_label_set_text(chip, text ? text : "");
+    lv_obj_remove_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+    return chip;
+}
+
 static void ui_dot(lv_obj_t *parent, int x, int y, uint32_t color) {
     lv_obj_t *dot = ui_panel(parent, x, y, 10, 10, color, LV_RADIUS_CIRCLE);
     if (dot) lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE);
@@ -151,7 +174,7 @@ static const char *hint_for_page(lanlan_page_t page) {
     switch (page) {
     case LANLAN_PAGE_COMPANION: return LANLAN_STR_COMPANION_PET_HINT;
     case LANLAN_PAGE_STATUS: return LANLAN_STR_STATUS_RETRY_HINT;
-    default: return UI_HINT_KEYS;
+    default: return LANLAN_STR_HINT_BAR_BAR;
     }
 }
 
@@ -288,15 +311,6 @@ static int count_local_day(const lanlan_records_view_t *view, const lanlan_local
 
 /* Short age band for the settings row; the full sentence lives in the sync
  * detail string used by the status page. */
-static const char *short_age_band(const lanlan_records_view_t *view) {
-    if (!view || view->last_sync_epoch <= 0) return LANLAN_STR_SYNC_NEVER;
-    int64_t age = view->now_epoch - view->last_sync_epoch;
-    if (age < 0) age = 0;
-    if (age < 300) return LANLAN_STR_SYNC_JUST_NOW;
-    if (age < 3600) return LANLAN_STR_SYNC_MINUTES_AGO;
-    return LANLAN_STR_SYNC_HOURS_AGO;
-}
-
 /* ------------------------------------------------------------ home page -- */
 
 static void render_home(lv_obj_t *screen, const lanlan_ui_state_t *state) {
@@ -549,53 +563,56 @@ static void render_companion(lv_obj_t *screen, const lanlan_ui_state_t *state) {
 
 static void render_settings(lv_obj_t *screen, const lanlan_ui_state_t *state) {
     const lanlan_records_view_t *view = state->view;
-    char value[48];
+    /* Nine rows share the 56..288 body band: a 25 px pitch with 23 px rows puts
+     * the last row at 256..279, clear of the hint bar at 292. The old 32 px
+     * pitch overflowed the panel once the two timeout rows were added. */
     for (unsigned i = 0; i < LANLAN_SETTINGS_ROW_COUNT; ++i) {
         bool selected = state->model->settings_row == (lanlan_settings_row_t)i;
-        lv_obj_t *row = ui_panel(screen, 12, UI_BODY_TOP + 32 * (int)i, 216, 30,
-                                 selected ? UI_COLOR_SELECTED : UI_COLOR_CARD, UI_ROW_CORNER);
+        int row_y = UI_BODY_TOP + 25 * (int)i;
+        lv_obj_t *row = ui_row_chip(screen, 12, row_y, 216, 23,
+                                    lanlan_view_settings_row_label((int)i), selected);
         if (!row) continue;
-        ui_text(row, 12, 5, 130, 20, lanlan_view_settings_row_label((int)i), &lanlan_font_16,
-                selected ? UI_COLOR_BODY : UI_COLOR_INK, LV_TEXT_ALIGN_LEFT);
+        /* The chip carries the row background and the label text; the value is a
+         * second, right-aligned label at row-local 92..212. The widest row label
+         * is four characters (64 px, i.e. 12..76), so the two can never collide,
+         * and the measured value envelope fits: 还没同步/刚刚同步 64 px,
+         * 数据 1 分钟前 97 px, 数据 35 分钟前 106 px, 数据 100 小时前 115 px,
+         * 数据 9999 小时前 120 px. Only an age past ~10000 hours would need
+         * dots, and even then the number stays readable. */
 
+        /* The model owns the value text for the toggles and for the two timeout
+         * rows; the information rows are composed here because their values come
+         * from the view (clock offset, data age, cache size). */
+        char value[48];
         value[0] = '\0';
-        switch ((lanlan_settings_row_t)i) {
-        case LANLAN_SETTINGS_ROW_MUTE:
-            snprintf(value, sizeof(value), "%s",
-                     state->model->globally_muted ? LANLAN_STR_SETTINGS_VALUE_ON
-                                                  : LANLAN_STR_SETTINGS_VALUE_OFF);
-            break;
-        case LANLAN_SETTINGS_ROW_REMINDER_SOUND:
-            snprintf(value, sizeof(value), "%s",
-                     state->model->reminder_sound_enabled ? LANLAN_STR_SETTINGS_VALUE_ON
-                                                          : LANLAN_STR_SETTINGS_VALUE_OFF);
-            break;
-        case LANLAN_SETTINGS_ROW_TIMEZONE: {
-            char zone[10];
-            format_offset(state->model->utc_offset_min, zone, sizeof(zone));
-            snprintf(value, sizeof(value), "%s", zone);
-            break;
-        }
-        case LANLAN_SETTINGS_ROW_SYNC:
-            snprintf(value, sizeof(value), "%s", short_age_band(view));
-            break;
-        case LANLAN_SETTINGS_ROW_STORAGE:
-            snprintf(value, sizeof(value), "%u %s",
-                     (unsigned)(view ? view->cache.record_count : 0u),
-                     LANLAN_STR_SYNC_RECORDS_UNIT);
-            break;
-        default: break;
+        const char *model_value = lanlan_view_settings_row_value_text(state->model, (int)i);
+        if (model_value[0] != '\0') {
+            snprintf(value, sizeof(value), "%s", model_value);
+        } else {
+            switch ((lanlan_settings_row_t)i) {
+            case LANLAN_SETTINGS_ROW_TIMEZONE: {
+                char zone[10];
+                format_offset(state->model->utc_offset_min, zone, sizeof(zone));
+                snprintf(value, sizeof(value), "%s", zone);
+                break;
+            }
+            case LANLAN_SETTINGS_ROW_SYNC:
+                /* The composed sentence ("数据 35 分钟前"), never a bare band
+                 * word: the number is the whole point of the row. */
+                lanlan_view_sync_status_text(view, value, sizeof(value));
+                break;
+            case LANLAN_SETTINGS_ROW_STORAGE:
+                snprintf(value, sizeof(value), "%u %s",
+                         (unsigned)(view ? view->cache.record_count : 0u),
+                         LANLAN_STR_SYNC_RECORDS_UNIT);
+                break;
+            default: break;
+            }
         }
         if (value[0] != '\0') {
-            ui_text(row, 142, 5, 66, 20, value, &lanlan_font_16,
+            ui_text(screen, 12 + 92, row_y + 2, 120, 20, value, &lanlan_font_16,
                     selected ? UI_COLOR_BODY : UI_COLOR_MUTED, LV_TEXT_ALIGN_RIGHT);
         }
-    }
-    if (state->storage_limited || (view && !view->clock_trusted)) {
-        ui_text(screen, 12, 282, 216, 16,
-                state->storage_limited ? LANLAN_STR_ERRORS_STORAGE
-                                       : LANLAN_STR_HOME_CLOCK_UNTRUSTED,
-                &lanlan_font_16, UI_COLOR_WARN, LV_TEXT_ALIGN_LEFT);
     }
 }
 

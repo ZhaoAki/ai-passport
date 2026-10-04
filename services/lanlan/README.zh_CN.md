@@ -1,8 +1,8 @@
 <p align="right"><a href="README.md">English</a> · <strong>简体中文</strong></p>
 
-# 澜澜服务
+# 懒懒服务
 
-支撑澜澜手机页面与护照设备的常驻记录服务。它为一个家庭保存吃饭、喝水、护理、清洁、
+支撑懒懒手机页面与护照设备的常驻记录服务。它为一个家庭保存吃饭、喝水、护理、清洁、
 散步等记录，保留全部修订，托管手机网页，并实现
 [cyber-lanlan-service.md](../../docs/applications/cyber-lanlan-service.md)
 中约定的设备同步协议。

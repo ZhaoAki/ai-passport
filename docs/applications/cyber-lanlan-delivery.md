@@ -16,7 +16,7 @@ still open. The frozen design is in [cyber-lanlan.md](cyber-lanlan.md) and
 | Branch | `feature/cyber-lanlan` |
 | Baseline | `99058004449a76c313375e238436b4642e36886c` (`feature/korean-learning`) |
 | Preserved branch | `feature/korean-learning` is untouched; this branch retires the Korean application from its own tree only |
-| Firmware | merged image `build/FoloToy-AI-Passport-full.bin`, 1822368 bytes, SHA-256 `b599f0e6ff6a5f9cd1a7d198548c8f2df939bad161e56ceeac13182a4f4c6f00`; application image 1756832 bytes inside the 8323072-byte factory partition, with its matching ELF, MAP, bootloader, partition table and `flash_args` retained in the content-addressed bundle `build/firmware/b599f0e6ff6a5f9cd1a7d198548c8f2df939bad161e56ceeac13182a4f4c6f00/` |
+| Firmware | merged image `build/FoloToy-AI-Passport-full.bin`, 1831840 bytes, SHA-256 `5d5b392f5cb6374f939d2dcc6b880a06f81e4432044e9a971c1673cf7482fe01`; application image 1766304 bytes inside the 8323072-byte factory partition, with its matching ELF, MAP, bootloader, partition table and `flash_args` retained in the content-addressed bundle `build/firmware/5d5b392f5cb6374f939d2dcc6b880a06f81e4432044e9a971c1673cf7482fe01/` |
 | Service | `services/lanlan/`, CPython standard library only, SQLite storage |
 | Mobile web | `web/lanlan/`, no build step, no third-party assets |
 | Deployment | `deploy/` (`docker-compose.yml`, `Caddyfile`, environment example) |
@@ -25,7 +25,10 @@ Verified at delivery: `./tools/validate.sh` passes completely (repository checks
 
 Stage coverage: M0 design documents, M1 service and mobile web, M2 passport sync with a
 bounded cache, M3 companion interaction, sounds and owner-configured reminders (all
-disabled by default), M4 build, artifacts and this handover.
+disabled by default), M4 build, artifacts and this handover. A later hardening round moved
+the device-side sync parsing into allocation-free code with its own host tests, added the
+A12 page-switch and key-event stress run, and made the key hints and the display timeouts
+owner-visible.
 
 ## 2. What the first generation does
 
@@ -41,7 +44,10 @@ disabled by default), M4 build, artifacts and this handover.
   CRC32-protected blob), syncs incrementally with a single global cursor, shows the sync
   state, the battery, the last successful sync time and the data age, works offline from the
   cache, and offers a second, redesigned UI with a pixel companion, short sounds, a global
-  mute and a reminder list.
+  mute, a reminder list, Chinese key hints, and dim and screen-off durations that the owner
+  can change in Settings. The first gesture after the screen turns off only wakes the
+  display. The device-side sync response parsing is covered by host tests and no longer
+  depends on a third-party JSON library.
 - Reminders start disabled with no interval preset; the owner enables a daily time in the
   web page. An instance can ring at most once, and dismissing a prompt is not completion.
 - The passport cannot create, edit or revoke records, and virtual interaction never
@@ -120,7 +126,8 @@ the password or the token in full. The owner-facing control map is in
 ./tools/validate.sh --static     # repository checks, firmware host tests, the service test suite
 ./tools/validate.sh --firmware   # ESP-IDF build, merged image, layout check, debug archive
 ./tools/validate.sh              # complete gate
-python3 tools/preview_lanlan.py  # render every screen at 240x320 with host LVGL plus a glyph audit
+python3 tools/preview_lanlan.py               # render every screen at 240x320 with host LVGL plus a glyph audit
+python3 tools/preview_lanlan.py --mode stress  # page-switch and key-event stress with heap and object checks
 python3 tools/archive_firmware.py verify build/firmware/<sha256>
 ```
 
@@ -151,8 +158,8 @@ in the sections above; the acceptance-by-acceptance view is in
 | Character art | The sprite set is placeholder art, marked as such in the generated source and in [assets/README.md](../../assets/README.md). The pixel grain and the final appearance still need the owner's approval before they are frozen. |
 | Note preview | The passport keeps a 48-byte UTF-8 preview of a note and renders an explicit truncation marker; the full note stays on the service and the phone. |
 | Caregiver labels | The passport learns the names from the service's sync payload; if a name cannot be resolved it shows the neutral fallback label from the string table instead of a raw id or a slot number. |
-| Key hints | The bottom hint line uses the ASCII form `UP/DN OK HOLD=BACK`; the frozen string table has no entry for a generic hint. |
-| Display timeouts | Dimming (30 s) and screen-off (90 s) are configurable through the configuration blob and the console, not from a settings row. |
+| Key hints | The bottom hint line is the generated Chinese hint string (up/down select, OK confirm, long press back); there is no per-key hint table. |
+| Display timeouts | Dimming and screen-off are configurable in Settings within fixed steps (dim 15/30/60/120 s; screen-off 60/90/180/300 s) and persisted in `cfg_v1`; screen-off is always kept strictly greater than dim. |
 | Reminder schedule | Daily repeat at one local time is the only supported schedule in this generation. |
 | Photos | The original family photographs are neither uploaded nor committed; the profile page has text fields only. |
 | Hosting | Local service plus a ready container configuration; no paid resource was created and no hosting decision was made. |

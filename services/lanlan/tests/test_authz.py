@@ -26,7 +26,7 @@ WRITE_ENDPOINTS = (
     ("POST", "/api/v1/devices/{device}/revoke", {}),
     ("POST", "/api/v1/auth/logout", {}),
     ("POST", "/api/v1/auth/change-password", {"current_password": "x", "new_password": "yyyyyyyy"}),
-    ("PATCH", "/api/v1/profile", {"pet_name": "澜澜"}),
+    ("PATCH", "/api/v1/profile", {"pet_name": "懒懒"}),
 )
 
 

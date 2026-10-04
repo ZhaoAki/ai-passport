@@ -12,20 +12,20 @@
 | 分支 | `feature/cyber-lanlan` |
 | 基线 | `99058004449a76c313375e238436b4642e36886c`（`feature/korean-learning`） |
 | 保留分支 | `feature/korean-learning` 未被改动；本分支仅在自己的目录树中移除韩语应用 |
-| 固件 | 合并镜像 `build/FoloToy-AI-Passport-full.bin`，1822368 字节，SHA-256 `b599f0e6ff6a5f9cd1a7d198548c8f2df939bad161e56ceeac13182a4f4c6f00`；应用镜像 1756832 字节，位于 8323072 字节的 factory 分区内，其对应的 ELF、MAP、bootloader、分区表和 `flash_args` 保留在按内容寻址的归档 `build/firmware/b599f0e6ff6a5f9cd1a7d198548c8f2df939bad161e56ceeac13182a4f4c6f00/` 中 |
+| 固件 | 合并镜像 `build/FoloToy-AI-Passport-full.bin`，1831840 字节，SHA-256 `5d5b392f5cb6374f939d2dcc6b880a06f81e4432044e9a971c1673cf7482fe01`；应用镜像 1766304 字节，位于 8323072 字节的 factory 分区内，其对应的 ELF、MAP、bootloader、分区表和 `flash_args` 保留在按内容寻址的归档 `build/firmware/5d5b392f5cb6374f939d2dcc6b880a06f81e4432044e9a971c1673cf7482fe01/` 中 |
 | 服务 | `services/lanlan/`，仅使用 CPython 标准库，SQLite 存储 |
 | 移动网页 | `web/lanlan/`，无构建步骤，无第三方资源 |
 | 部署 | `deploy/`（`docker-compose.yml`、`Caddyfile`、环境变量示例） |
 
 交付时已验证：`./tools/validate.sh` 完整通过（仓库检查、169 个服务测试、固件主机测试、ESP-IDF 构建、合并镜像布局检查与调试归档），且 `python3 tools/archive_firmware.py verify build/firmware/b599f0e6ff6a5f9c…` 确认归档有效。代码提交为 `de1d658`；本交付记录提交在其之上，因此分支的最新提交就是添加本文件的提交。
 
-阶段覆盖：M0 设计文档，M1 服务与移动网页，M2 使用有界缓存的护照同步，M3 伙伴互动、声音和由所有者配置的提醒（默认全部禁用），M4 构建、产物和本交付记录。
+阶段覆盖：M0 设计文档，M1 服务与移动网页，M2 使用有界缓存的护照同步，M3 伙伴互动、声音和由所有者配置的提醒（默认全部禁用），M4 构建、产物和本交付记录。随后一轮加固把设备端的同步解析改成无内存分配的实现并配上主机测试，加入了 A12 的切页与按键压力运行，并让按键提示和显示超时对所有者可见可配。
 
 ## 2. 第一代的功能
 
 - 两位照顾者通过移动网页记录喂食、饮水、护理（洗澡、梳毛、刷牙、梳理）、清洁、散步和其他项目，带明确的发生时间、可以是另一位照顾者的执行者、可选的带单位数量、可选的散步时长和可选备注。未设置的数量保持未知，绝不存储或显示为 0。
 - 服务端是权威：只追加修订，带创建者、执行者、版本、撤销删除标记、幂等提交、可见的编辑冲突、CSV 和 JSON 导出、在线备份与恢复。
-- 护照保留一个有界的近期缓存（40 条记录、32 个删除标记、16 条提醒，位于一个受 CRC32 保护的 blob 中），使用单个全局游标增量同步，显示同步状态、电量、最后一次成功同步时间和数据年龄，离线时从缓存工作，并提供第二套重新设计的界面，包含像素伙伴、短音效、全局静音和提醒列表。
+- 护照保留一个有界的近期缓存（40 条记录、32 个删除标记、16 条提醒，放在同一个受 CRC32 保护的 blob 中），用单一全局游标做增量同步，显示同步状态、电量、上次成功同步时间和数据年龄，可离线读取缓存，并提供重新设计的第二套界面：像素伙伴、短音效、全局静音、提醒列表、中文按键提示，以及可在设置页调整的调暗与熄屏时长。熄屏后的第一次手势只唤醒显示。设备端的同步响应解析已有主机测试覆盖，不再依赖第三方 JSON 库。
 - 提醒初始为禁用且不预设任何间隔；所有者在网页中启用一个每日时间。一个实例最多响一次，关闭提示不等于完成。
 - 护照不能创建、编辑或撤销记录，虚拟互动永不产生照顾记录。
 
@@ -86,7 +86,8 @@ lanlan sync now
 ./tools/validate.sh --static     # repository checks, firmware host tests, the service test suite
 ./tools/validate.sh --firmware   # ESP-IDF build, merged image, layout check, debug archive
 ./tools/validate.sh              # complete gate
-python3 tools/preview_lanlan.py  # render every screen at 240x320 with host LVGL plus a glyph audit
+python3 tools/preview_lanlan.py               # render every screen at 240x320 with host LVGL plus a glyph audit
+python3 tools/preview_lanlan.py --mode stress  # page-switch and key-event stress with heap and object checks
 python3 tools/archive_firmware.py verify build/firmware/<sha256>
 ```
 
@@ -114,8 +115,8 @@ Unverified:   on-glass rendering, Wi-Fi association and TLS behaviour, real key 
 | 角色美术 | 精灵集是占位美术，已在生成的源码和 [assets/README.md](../../assets/README.md) 中如此标记。像素颗粒和最终外观在冻结之前仍需所有者批准。 |
 | 备注预览 | 护照保留备注的 48 字节 UTF-8 预览，并渲染明确的截断标记；完整备注保留在服务和手机上。 |
 | 照顾者标签 | 护照从服务的同步负载中学习姓名；如果无法解析某个姓名，它会显示中性标签 未知，而不是原始 id 或槽位编号。 |
-| 按键提示 | 底部提示行使用 ASCII 形式 `UP/DN OK HOLD=BACK`；冻结的字符串表中没有通用提示的条目。 |
-| 显示超时 | 调暗（30 秒）和熄屏（90 秒）可通过配置 blob 和控制台配置，而不是通过设置行配置。 |
+| 按键提示 | 底部提示行使用生成的中文串 `上下选择·OK确认·长按返回`；没有逐键提示表。 |
+| 显示超时 | 调暗与熄屏可在设置页按固定档位调整（调暗 15/30/60/120 秒；熄屏 60/90/180/300 秒），并保存在 `cfg_v1` 中；熄屏时长始终严格大于调暗时长。 |
 | 提醒日程 | 在一个本地时间每日重复是本代唯一支持的日程。 |
 | 照片 | 原始家庭照片既不上传也不提交；档案页面只有文本字段。 |
 | 托管 | 本地服务加上就绪的容器配置；没有创建付费资源，也没有做出托管决策。 |

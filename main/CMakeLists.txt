@@ -7,12 +7,14 @@ idf_component_register(
         "main.c"
         "lanlan_cache.c"
         "lanlan_caregiver.c"
+        "lanlan_json.c"
         "lanlan_model.c"
         "lanlan_record.c"
         "lanlan_reminder.c"
         "lanlan_sfx_data.c"
         "lanlan_strings.c"
         "lanlan_sync.c"
+        "lanlan_sync_parse.c"
         "lanlan_time.c"
         "lanlan_ui.c"
     INCLUDE_DIRS "."
@@ -26,7 +28,6 @@ idf_component_register(
         esp_http_client
         esp-tls
         mbedtls
-        json
         console
         lwip
         lvgl

@@ -46,6 +46,48 @@ def required_characters():
     return {c for c in text if c.isprintable()}
 
 
+def parse_generated_font(path):
+    """Return (adv_w in 1/16 px per glyph id, codepoint -> glyph id).
+
+    The converter writes one glyph_dsc entry per glyph and a small cmap either
+    as a dense range or as a sparse delta list relative to range_start, so the
+    generated C file alone is enough to measure rendered text width.
+    """
+    text = read(path)
+    advances = [int(value) for value in re.findall(r'\.adv_w\s*=\s*(\d+)', text)]
+    cmap = {}
+    sparse_arrays = re.findall(
+        r'static const uint16_t unicode_list_\d+\[\] = \{(.*?)\};', text, re.S)
+    sparse_index = 0
+    for match in re.finditer(
+            r'\{\s*\.range_start = (\d+), \.range_length = (\d+), '
+            r'\.glyph_id_start = (\d+),(.*?)\}', text, re.S):
+        start, length, gid = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        if 'SPARSE' in match.group(4):
+            deltas = [int(value, 16) for value in
+                      re.findall(r'0x([0-9a-fA-F]+)', sparse_arrays[sparse_index])]
+            sparse_index += 1
+            for index, delta in enumerate(deltas):
+                cmap[start + delta] = gid + index
+        else:
+            for index in range(length):
+                cmap[start + index] = gid + index
+    return advances, cmap
+
+
+def rendered_width_1_16(path, text):
+    advances, cmap = parse_generated_font(path)
+    total = 0
+    missing = []
+    for character in text:
+        gid = cmap.get(ord(character))
+        if gid is None or gid >= len(advances):
+            missing.append(character)
+            continue
+        total += advances[gid]
+    return total, missing
+
+
 class LanlanAssets(unittest.TestCase):
     def test_generated_strings_match_the_json_source(self):
         document = json.loads(read('main/lanlan/strings.json'))
@@ -161,6 +203,67 @@ class LanlanAssets(unittest.TestCase):
                 offset += clip['bytes']
         self.assertEqual(offset, len(pcm))
         self.assertLess(len(pcm), 256 * 1024)
+
+    def test_hint_and_timeout_strings_fit_their_widgets(self):
+        document = json.loads(read('main/lanlan/strings.json'))
+        hints = document['hints']
+        settings = document['settings']
+        # The three key hints plus the composed bar the UI draws as one label.
+        for key in ('up_down', 'select', 'ok', 'confirm', 'long_press', 'back'):
+            self.assertIn(key, hints)
+            self.assertTrue(hints[key])
+        bar = document['hint_bar']['bar']
+        self.assertIn(hints['up_down'], bar)
+        self.assertIn(hints['select'], bar)
+        self.assertIn(hints['ok'], bar)
+        self.assertIn(hints['confirm'], bar)
+        self.assertIn(hints['long_press'], bar)
+        self.assertIn(hints['back'], bar)
+
+        # The hint label in main/lanlan_ui.c is x=12, width=216 at 16 px.
+        band_1_16, missing = rendered_width_1_16('assets/fonts/lanlan_font_16.c', bar)
+        self.assertFalse(missing, 'hint bar needs missing glyphs: %r' % missing)
+        self.assertLessEqual(band_1_16 / 16.0, 216.0,
+                             'the hint bar is %0.2f px wide and would overflow the 216 px band'
+                             % (band_1_16 / 16.0))
+        self.assertLess(band_1_16 / 16.0, 240.0)
+
+        # Both new settings row labels fit their 130 px label box at 16 px.
+        for key in ('row_dim', 'row_screen_off'):
+            width_1_16, missing = rendered_width_1_16('assets/fonts/lanlan_font_16.c',
+                                                      settings[key])
+            self.assertFalse(missing, '%s needs missing glyphs: %r' % (key, missing))
+            self.assertLessEqual(width_1_16 / 16.0, 130.0)
+
+        # Every allowed step has an exact value literal in the generated table.
+        for key in ('value_dim_15s', 'value_dim_30s', 'value_dim_60s', 'value_dim_120s',
+                    'value_screen_off_60s', 'value_screen_off_90s',
+                    'value_screen_off_180s', 'value_screen_off_300s',
+                    'dim_seconds', 'dim_minutes'):
+            self.assertIn(key, settings)
+            self.assertTrue(settings[key])
+
+    def test_new_strings_are_covered_by_both_font_sizes(self):
+        document = json.loads(read('main/lanlan/strings.json'))
+        new_texts = [document['hint_bar']['bar']] + list(document['hints'].values()) + [
+            document['settings'][key] for key in
+            ('row_dim', 'row_screen_off', 'value_dim_15s', 'value_dim_30s', 'value_dim_60s',
+             'value_dim_120s', 'value_screen_off_60s', 'value_screen_off_90s',
+             'value_screen_off_180s', 'value_screen_off_300s')]
+        for size in FONT_SIZES:
+            body = read('assets/fonts/lanlan_font_%d.c' % size)
+            for text in new_texts:
+                for character in text:
+                    if character in (' ', '\n'):
+                        continue
+                    code = 'U+%04X' % ord(character)
+                    self.assertIn(code, body,
+                                  'lanlan_font_%d is missing %s from %r' % (size, code, text))
+        # The four characters that were only introduced by this round.
+        for character in ('\u8c03', '\u7184', '\u5c4f', '\u79d2'):
+            code = 'U+%04X' % ord(character)
+            for size in FONT_SIZES:
+                self.assertIn(code, read('assets/fonts/lanlan_font_%d.c' % size))
 
     def test_sfx_header_matches_the_manifest(self):
         manifest = json.loads(read('assets/music/lanlan_sfx_manifest.json'))

@@ -671,6 +671,17 @@ static void config_apply_offset(void) {
     s_render_dirty = true;
 }
 
+/* Writes cfg_v1 and commits it. Called from the UI worker (mute, reminder sound
+ * and the two backlight timeouts) and once at boot when a stored timeout pair had
+ * to be replaced by the documented defaults. */
+static void persist_config(void) {
+    if (!s_nvs_open || !s_nvs_mutex) return;
+    xSemaphoreTake(s_nvs_mutex, portMAX_DELAY);
+    (void)store_config_locked();
+    (void)nvs_commit(s_nvs);
+    xSemaphoreGive(s_nvs_mutex);
+}
+
 static void config_sync_from_model(void) {
     bool changed = false;
     if (s_config.mute != (uint8_t)(s_model->globally_muted ? 1u : 0u)) {
@@ -681,11 +692,18 @@ static void config_sync_from_model(void) {
         s_config.reminder_sound = s_model->reminder_sound_enabled ? 1u : 0u;
         changed = true;
     }
-    if (!changed || !s_nvs_open) return;
-    xSemaphoreTake(s_nvs_mutex, portMAX_DELAY);
-    (void)store_config_locked();
-    (void)nvs_commit(s_nvs);
-    xSemaphoreGive(s_nvs_mutex);
+    /* The two backlight timeouts are stepped on the settings page, and every
+     * accepted step is persisted here so a reboot keeps it. */
+    if (s_config.dim_seconds != (uint16_t)s_model->dim_seconds) {
+        s_config.dim_seconds = (uint16_t)s_model->dim_seconds;
+        changed = true;
+    }
+    if (s_config.screen_off_seconds != (uint16_t)s_model->screen_off_seconds) {
+        s_config.screen_off_seconds = (uint16_t)s_model->screen_off_seconds;
+        changed = true;
+    }
+    if (!changed) return;
+    persist_config();
 }
 
 /* ------------------------------------------------------------- actions -- */
@@ -718,20 +736,17 @@ static void handle_action(lanlan_action_t action) {
 static void handle_input(const input_event_t *event, bool display_was_off) {
     if (!s_ready) return;
     s_last_input_us = now_us();
-    if (s_dimmed && s_display_ok) {
+    /* The display comes back on the first gesture, dimmed or off. What that
+     * gesture then means is the model's decision: the model owns the wake-only
+     * rule, marks itself active and reports LANLAN_ACTION_WAKE_ONLY when the
+     * gesture was spent waking the screen, so this function must not duplicate
+     * that rule. */
+    if (s_display_ok && (s_dimmed || display_was_off)) {
         bsp_display_backlight(LANLAN_BACKLIGHT_ON_PERCENT);
-        s_dimmed = false;
     }
-    if (display_was_off) {
-        /* The first gesture after the screen turned off only wakes it. The long
-         * press that wakes is consumed entirely, so releasing it cannot also
-         * deliver a click. */
-        if (s_display_ok) bsp_display_backlight(LANLAN_BACKLIGHT_ON_PERCENT);
-        s_dark = false;
-        lanlan_model_set_active(s_model, true);
-        s_render_dirty = true;
-        return;
-    }
+    s_dimmed = false;
+    s_dark = false;
+
     if (event->event == BSP_BTN_DOUBLE && event->key == BSP_BTN_OK) {
         /* The documented companion controls are UP/DOWN and an OK click. A
          * double click is an extra: the bark frame plus its short clip. It is
@@ -761,6 +776,12 @@ static void handle_input(const input_event_t *event, bool display_was_off) {
     model_event.woke_screen = display_was_off;
     s_pcm_remaining = 0;
     lanlan_action_t action = lanlan_model_handle_key(s_model, &model_event);
+    if (action == LANLAN_ACTION_WAKE_ONLY) {
+        /* The gesture was spent waking the display: the backlight is already
+         * restored above and nothing else may happen, not even a redraw, because
+         * the page content never changed. */
+        return;
+    }
     handle_action(action);
     config_sync_from_model();
     s_render_dirty = true;
@@ -819,8 +840,18 @@ static void reminder_poll(void) {
 static void backlight_poll(void) {
     if (!s_display_ok) return;
     int64_t idle = now_us() - s_last_input_us;
-    int64_t dim = (int64_t)s_config.dim_seconds * 1000000LL;
-    int64_t off = (int64_t)s_config.screen_off_seconds * 1000000LL;
+    /* The model holds the values the settings page steps, so a change takes
+     * effect on the next poll. The defaults are a defensive floor: the model
+     * refuses an invalid pair, so this can only fire if a future caller writes
+     * the fields directly. */
+    int64_t dim_seconds = s_model->dim_seconds;
+    int64_t off_seconds = s_model->screen_off_seconds;
+    if (dim_seconds <= 0 || off_seconds <= dim_seconds) {
+        dim_seconds = LANLAN_TIMEOUT_DIM_DEFAULT_SECONDS;
+        off_seconds = LANLAN_TIMEOUT_SCREEN_OFF_DEFAULT_SECONDS;
+    }
+    int64_t dim = dim_seconds * 1000000LL;
+    int64_t off = off_seconds * 1000000LL;
     if (!s_dark && idle >= off) {
         /* Not deep sleep: only the backlight is turned off, and the first
          * gesture restores it. No battery-life claim is made. */
@@ -1162,6 +1193,23 @@ void app_main(void) {
     s_model->globally_muted = s_config.mute != 0;
     s_model->reminder_sound_enabled = s_config.reminder_sound != 0;
     s_model->utc_offset_min = s_config.utc_offset_minutes;
+    /* Backlight timeouts come from cfg_v1. The model only accepts its documented
+     * step pairs, so a blob written by an older build or edited by hand is
+     * replaced by the documented defaults and reported, never installed as-is. */
+    if (!lanlan_model_set_timeouts(s_model, s_config.dim_seconds, s_config.screen_off_seconds)) {
+        ESP_LOGW(TAG, "stored backlight timeouts (%us dim / %us off) are not a supported pair; "
+                      "using %ds / %ds",
+                 (unsigned)s_config.dim_seconds, (unsigned)s_config.screen_off_seconds,
+                 LANLAN_TIMEOUT_DIM_DEFAULT_SECONDS, LANLAN_TIMEOUT_SCREEN_OFF_DEFAULT_SECONDS);
+        if (!lanlan_model_set_timeouts(s_model, LANLAN_TIMEOUT_DIM_DEFAULT_SECONDS,
+                                       LANLAN_TIMEOUT_SCREEN_OFF_DEFAULT_SECONDS)) {
+            ESP_LOGE(TAG, "the documented timeout defaults were refused by the model");
+        }
+        s_config.dim_seconds = (uint16_t)LANLAN_TIMEOUT_DIM_DEFAULT_SECONDS;
+        s_config.screen_off_seconds = (uint16_t)LANLAN_TIMEOUT_SCREEN_OFF_DEFAULT_SECONDS;
+        /* Keep the stored blob consistent with what the device actually uses. */
+        persist_config();
+    }
     cache_load();
 
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {

@@ -247,7 +247,7 @@ class ProfileTest(LanlanTestCase):
         saved = client.patch(
             "/api/v1/profile",
             {
-                "pet_name": "澜澜",
+                "pet_name": "懒懒",
                 "birthday": "2024-05-01",
                 "breed": "狸花猫",
                 "weight_grams": 4200,
@@ -256,7 +256,7 @@ class ProfileTest(LanlanTestCase):
         )
         self.assertEqual(200, saved.status, saved.text())
         profile = saved.json()["profile"]
-        self.assertEqual("澜澜", profile["pet_name"])
+        self.assertEqual("懒懒", profile["pet_name"])
         self.assertEqual("2024-05-01", profile["birthday"])
         self.assertEqual(4200, profile["weight_grams"])
 

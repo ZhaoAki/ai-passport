@@ -28,16 +28,45 @@ typedef enum {
 } lanlan_home_entry_t;
 
 /* Settings rows, in list order. */
+/* Settings rows in list order. The writable rows come first and the read-only
+ * information rows stay last, so a longer list of toggles never pushes the
+ * information off the bottom of the page. */
 typedef enum {
     LANLAN_SETTINGS_ROW_REFRESH = 0,
     LANLAN_SETTINGS_ROW_MUTE,
     LANLAN_SETTINGS_ROW_REMINDER_SOUND,
     LANLAN_SETTINGS_ROW_REMINDER_LIST,
+    LANLAN_SETTINGS_ROW_DIM,
+    LANLAN_SETTINGS_ROW_SCREEN_OFF,
     LANLAN_SETTINGS_ROW_TIMEZONE,
     LANLAN_SETTINGS_ROW_SYNC,
     LANLAN_SETTINGS_ROW_STORAGE,
     LANLAN_SETTINGS_ROW_COUNT
 } lanlan_settings_row_t;
+
+/* ------------------------------------------- idle timeout configuration -- */
+
+/* Bounded step sets for the two backlight timeouts. The lists are the complete
+ * set the device supports; the console may set the same values, and the UI
+ * steps through them with lanlan_model_step_dim()/step_screen_off(). */
+#define LANLAN_DIM_STEP_COUNT 4
+#define LANLAN_SCREEN_OFF_STEP_COUNT 4
+/* The documented relationship: the screen must never turn off before or at the
+ * dim timeout, so screen_off_seconds is always strictly greater than
+ * dim_seconds. Raising dim above the current screen-off value therefore pushes
+ * screen_off up to the next allowed step (see lanlan_model_set_dim()); a step
+ * with no room left is refused instead of breaking the invariant. */
+#define LANLAN_TIMEOUT_DIM_DEFAULT_SECONDS 30
+#define LANLAN_TIMEOUT_SCREEN_OFF_DEFAULT_SECONDS 90
+
+/* Allowed values in seconds, ascending. */
+extern const int LANLAN_DIM_STEPS_SECONDS[LANLAN_DIM_STEP_COUNT];
+extern const int LANLAN_SCREEN_OFF_STEPS_SECONDS[LANLAN_SCREEN_OFF_STEP_COUNT];
+
+/* Index of value in the step set, or -1. A value that is not an exact step is
+ * not selectable through the UI. */
+int lanlan_model_dim_step_index(int seconds);
+int lanlan_model_screen_off_step_index(int seconds);
 
 typedef enum {
     LANLAN_PAGE_HOME = 0,
@@ -83,8 +112,27 @@ typedef enum {
     LANLAN_ACTION_RECORD_REVOKE
 } lanlan_action_t;
 
-/* One de-bounced key event. `woke_screen` is true when the display was off
- * before the gesture, so the model can apply the wake-only rule. */
+/* One de-bounced key event.
+ *
+ * `woke_screen` is informational: the caller sets it when its own display state
+ * was off before the gesture, and may use it for backlight bookkeeping. The
+ * model does NOT read it: the wake-only rule is decided inside the model from
+ * `model->active`, so the rule cannot be duplicated, forgotten or bypassed by a
+ * caller. A caller that wants the pause behaviour must therefore not consume the
+ * gesture itself.
+ *
+ * Evidence for the "release of a waking long press delivers no click" half:
+ * components/bsp/src/bsp_button.c registers exactly BUTTON_PRESS_DOWN,
+ * BUTTON_SINGLE_CLICK, BUTTON_DOUBLE_CLICK and BUTTON_LONG_PRESS_START
+ * (register_callbacks, bsp_button.c:118-125) with long_press_time =
+ * BSP_BTN_LONG_PRESS_MS (500 ms, bsp_pins.h:62). In the pinned
+ * espressif__button/iot_button.c state machine, release after a triggered long
+ * press walks PRESS_LONG_PRESS_UP_CHECK -> BUTTON_LONG_PRESS_UP ->
+ * BUTTON_PRESS_UP -> BUTTON_PRESS_END (iot_button.c:278-318); BUTTON_SINGLE_CLICK
+ * is emitted only from the short-press release path PRESS_REPEAT_DOWN_CHECK
+ * (iot_button.c:181-186). Since the BSP registers no callback for
+ * BUTTON_LONG_PRESS_UP, a physical press that triggered BSP_BTN_LONG produces no
+ * further event on release, so no click can follow it. */
 typedef struct {
     lanlan_key_t key;
     bool woke_screen;
@@ -106,6 +154,10 @@ typedef struct {
      * settings rows render the current value without a second lookup. */
     bool globally_muted;
     bool reminder_sound_enabled;
+    /* Backlight timeouts in seconds. They live here so the UI can render them
+     * without reaching into NVS; the persistence blob stays with the app. */
+    int dim_seconds;
+    int screen_off_seconds;
     int16_t utc_offset_min;
     bool active;              /* display on; false enables the wake-only rule */
     lanlan_local_now_t now;   /* last known local time, injected by the app */
@@ -162,6 +214,25 @@ bool lanlan_model_pending_record_action(const lanlan_model_t *model);
 /* True when `action` is one of the forbidden record-writing actions. */
 bool lanlan_action_is_record_write(lanlan_action_t action);
 
+/* ---------------------------------------------------- timeout selection -- */
+
+/* Installs both timeouts. `dim` must be an allowed dim step smaller than
+ * `screen_off`, and `screen_off` an allowed screen-off step; otherwise the pair
+ * is rejected and nothing changes, so the model can never hold a configuration
+ * the device would not accept. */
+bool lanlan_model_set_timeouts(lanlan_model_t *model, int dim_seconds, int screen_off_seconds);
+/* Steps the dim value one step up (dir > 0) or down (dir < 0), clamping at the
+ * ends. Raising dim above the current screen-off value also raises screen_off
+ * to the next allowed step, so screen_off stays strictly greater than dim.
+ * Returns false when nothing changed: at a clamp end, or when the step would
+ * need a screen-off value beyond the largest allowed step. */
+bool lanlan_model_step_dim(lanlan_model_t *model, int direction);
+/* Steps the screen-off value one step up/down, clamping at the ends and never
+ * letting it fall to or below dim. Returns false when nothing changed. */
+bool lanlan_model_step_screen_off(lanlan_model_t *model, int direction);
+/* True when the pair satisfies the documented invariant. */
+bool lanlan_model_timeouts_valid(int dim_seconds, int screen_off_seconds);
+
 /* ----------------------------------------------------------- view model -- */
 
 const lanlan_record_t *lanlan_view_record(const lanlan_records_view_t *view, int index);
@@ -174,6 +245,20 @@ int lanlan_view_clamp_offset(int count, int offset, int rows);
 const char *lanlan_view_page_title(lanlan_page_t page);
 /* Settings row label by row index. */
 const char *lanlan_view_settings_row_label(int row);
+/* Value text per timeout row: "30 秒" or "3 分钟", drawn from the generated
+ * table so the UI has no formatting logic. Each helper accepts only the steps
+ * of its own row, because 60 and 120 seconds are valid for both rows but read
+ * differently ("1 分钟" dim against "60 秒" screen-off). Returns "" for a value
+ * that is not an allowed step for that row. */
+const char *lanlan_view_dim_text(int seconds);
+const char *lanlan_view_screen_off_text(int seconds);
+/* Convenience lookup for a value whose row is unknown; prefer the two helpers
+ * above when the row is known. */
+const char *lanlan_view_timeout_text(int seconds);
+/* Value text for a settings row, or "" when the row has no text value (the
+ * refresh action and the reminder-list navigation). The caller passes the model
+ * so the toggles and the timeout rows resolve through one helper. */
+const char *lanlan_view_settings_row_value_text(const lanlan_model_t *model, int row);
 /* Home entry label by entry index. */
 const char *lanlan_view_home_entry_label(int entry);
 const char *lanlan_view_character_state_label(lanlan_character_t character);

@@ -15,7 +15,6 @@
 #include <string.h>
 #include <time.h>
 
-#include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
@@ -33,6 +32,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "lanlan_sync_parse.h"
 #include "lanlan_time.h"
 
 static const char *TAG = "lanlan_sync";
@@ -691,393 +691,6 @@ static void http_ack(uint32_t cursor) {
 
 /* ------------------------------------------------------------ JSON parse -- */
 
-static int hex_digit(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-static bool parse_uuid(const char *text, uint8_t out[LANLAN_ID_BYTES]) {
-    if (!text || strlen(text) != 36) return false;
-    size_t index = 0;
-    size_t produced = 0;
-    while (index < 36) {
-        if (index == 8 || index == 13 || index == 18 || index == 23) {
-            if (text[index] != '-') return false;
-            ++index;
-            continue;
-        }
-        if (index + 1 >= 36 || produced >= LANLAN_ID_BYTES) return false;
-        int high = hex_digit(text[index]);
-        int low = hex_digit(text[index + 1]);
-        if (high < 0 || low < 0) return false;
-        out[produced++] = (uint8_t)((high << 4) | low);
-        index += 2;
-    }
-    return produced == LANLAN_ID_BYTES && !lanlan_record_id_is_zero(out);
-}
-
-static bool json_string(const cJSON *object, const char *name, const char **out) {
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
-    if (!item) {
-        *out = NULL;
-        return true;
-    }
-    if (cJSON_IsNull(item)) {
-        *out = NULL;
-        return true;
-    }
-    if (!cJSON_IsString(item) || !item->valuestring) return false;
-    *out = item->valuestring;
-    return true;
-}
-
-static bool json_number(const cJSON *object, const char *name, double *out) {
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
-    if (!item || cJSON_IsNull(item)) return false;
-    if (!cJSON_IsNumber(item)) return false;
-    *out = cJSON_GetNumberValue(item);
-    return true;
-}
-
-static lanlan_category_t parse_category(const char *text) {
-    if (!text) return LANLAN_CAT_COUNT;
-    if (strcmp(text, "meal") == 0) return LANLAN_CAT_MEAL;
-    if (strcmp(text, "water") == 0) return LANLAN_CAT_WATER;
-    if (strcmp(text, "care") == 0) return LANLAN_CAT_CARE;
-    if (strcmp(text, "cleaning") == 0) return LANLAN_CAT_CLEANING;
-    if (strcmp(text, "walk") == 0) return LANLAN_CAT_WALK;
-    if (strcmp(text, "other") == 0) return LANLAN_CAT_OTHER;
-    return LANLAN_CAT_COUNT;
-}
-
-static lanlan_subitem_t parse_subitem(lanlan_category_t category, const char *text) {
-    if (!text || text[0] == '\0') return LANLAN_SUB_NONE;
-    if (category == LANLAN_CAT_CARE) {
-        if (strcmp(text, "bath") == 0) return LANLAN_SUB_BATH;
-        if (strcmp(text, "grooming") == 0) return LANLAN_SUB_GROOMING;
-        if (strcmp(text, "teeth") == 0) return LANLAN_SUB_TEETH;
-        if (strcmp(text, "comb") == 0) return LANLAN_SUB_COMB;
-        if (strcmp(text, "other") == 0) return LANLAN_SUB_CARE_OTHER;
-        return LANLAN_SUB_COUNT;
-    }
-    if (category == LANLAN_CAT_CLEANING) {
-        if (strcmp(text, "ear") == 0) return LANLAN_SUB_EAR;
-        if (strcmp(text, "paw") == 0) return LANLAN_SUB_PAW;
-        if (strcmp(text, "pad") == 0) return LANLAN_SUB_PAD;
-        if (strcmp(text, "litter") == 0) return LANLAN_SUB_LITTER;
-        if (strcmp(text, "other") == 0) return LANLAN_SUB_CLEANING_OTHER;
-        return LANLAN_SUB_COUNT;
-    }
-    return LANLAN_SUB_COUNT;
-}
-
-static lanlan_unit_t parse_unit(const char *text) {
-    if (!text || text[0] == '\0') return LANLAN_UNIT_NONE;
-    if (strcmp(text, "g") == 0) return LANLAN_UNIT_G;
-    if (strcmp(text, "ml") == 0) return LANLAN_UNIT_ML;
-    if (strcmp(text, "scoop") == 0) return LANLAN_UNIT_SCOOP;
-    if (strcmp(text, "cup") == 0) return LANLAN_UNIT_CUP;
-    if (strcmp(text, "piece") == 0) return LANLAN_UNIT_PIECE;
-    if (strcmp(text, "bag") == 0) return LANLAN_UNIT_BAG;
-    if (strcmp(text, "bowl") == 0) return LANLAN_UNIT_BOWL;
-    return LANLAN_UNIT_COUNT;
-}
-
-/* Copies a server string into a fixed field: sanitized, UTF-8 safe, bounded by
- * characters, and always terminated. A missing value leaves an empty string.
- * The sanitize buffer is a fixed local; the server bounds the source at 200
- * characters and anything longer is cut on both steps. */
-#define LANLAN_SYNC_TEXT_SCRATCH 192
-static void copy_text_field(const char *source, char *destination, size_t destination_size,
-                            size_t max_chars) {
-    if (!destination || destination_size == 0) return;
-    destination[0] = '\0';
-    if (!source) return;
-    char sanitized[LANLAN_SYNC_TEXT_SCRATCH];
-    (void)lanlan_text_sanitize(source, sanitized, sizeof(sanitized));
-    (void)lanlan_utf8_copy_chars(sanitized, destination, destination_size, max_chars);
-}
-
-/* The record struct stores a caregiver index, not an id, and the validator
- * rejects anything above 1. The service sends user ids, so the glue layer owns
- * the id -> slot directory; the hook must always answer 0 or 1. */
-static uint8_t caregiver_index(const cJSON *object, const char *name) {
-    const char *text = NULL;
-    if (!json_string(object, name, &text) || !text || text[0] == '\0') return 0;
-    if (!s_hooks.caregiver) return 0;
-    uint8_t index = s_hooks.caregiver(text, s_hooks.user);
-    return index < 2 ? index : 0;
-}
-
-/* Applies the optional `members` array of an already parsed page. The field is
- * additive, so an absent, empty or malformed list is "no update" rather than a
- * sync error, unknown fields inside an entry are ignored, and an entry without a
- * usable id is skipped. Called before any record of the page is mapped. */
-static void apply_members(const cJSON *root) {
-    if (!s_hooks.members || !root) return;
-    const cJSON *members = cJSON_GetObjectItemCaseSensitive(root, "members");
-    if (!cJSON_IsArray(members)) return;
-    lanlan_caregiver_member_t list[LANLAN_SYNC_MEMBER_LIMIT];
-    int count = 0;
-    const cJSON *item = NULL;
-    cJSON_ArrayForEach(item, members) {
-        if (count >= LANLAN_SYNC_MEMBER_LIMIT) break;
-        const char *id = NULL;
-        if (!json_string(item, "id", &id) || !id || id[0] == '\0') continue;
-        const char *display_name = NULL;
-        (void)json_string(item, "display_name", &display_name);
-        list[count].id = id;
-        list[count].display_name = display_name;
-        ++count;
-    }
-    if (count > 0) s_hooks.members(list, count, s_hooks.user);
-}
-
-static bool parse_record(const cJSON *item, int16_t fallback_offset_min, lanlan_record_t *record) {
-    const char *text = NULL;
-    if (!json_string(item, "id", &text) || !text) return false;
-    memset(record, 0, sizeof(*record));
-    if (!parse_uuid(text, record->id)) return false;
-
-    double number = 0;
-    if (json_number(item, "v", &number) && number >= 1) {
-        record->version = (uint32_t)number;
-    } else {
-        record->version = 1;
-    }
-    if (!json_string(item, "cat", &text)) return false;
-    record->category = parse_category(text);
-    if (record->category >= LANLAN_CAT_COUNT) return false;
-
-    if (!json_string(item, "sub", &text)) return false;
-    record->subitem = parse_subitem(record->category, text);
-    if (record->subitem >= LANLAN_SUB_COUNT) return false;
-
-    if (!json_string(item, "at", &text) || !text) return false;
-    int16_t parsed_offset = 0;
-    if (lanlan_time_parse_rfc3339(text, &record->occurred_epoch, &parsed_offset)
-        != LANLAN_TIME_OK) {
-        return false;
-    }
-    /* The compact record carries an IANA zone name in "tz"; the device has no
-     * timezone database, so display uses the offset the response reported. */
-    (void)json_string(item, "tz", &text);
-    record->occurred_tz_offset_min = fallback_offset_min;
-    record->created_epoch = record->occurred_epoch;
-
-    if (!json_string(item, "tc", &text)) return false;
-    record->time_confidence = (text && strcmp(text, "estimated") == 0)
-                                  ? LANLAN_TIME_CONFIDENCE_ESTIMATED
-                                  : LANLAN_TIME_CONFIDENCE_TRUSTED;
-
-    record->created_by = caregiver_index(item, "by");
-    record->performed_by = caregiver_index(item, "perf");
-
-    /* The cache stores bounded previews, cut on a UTF-8 boundary by the record
-     * module, which also records that the note was truncated. */
-    if (!json_string(item, "name", &text)) return false;
-    (void)lanlan_record_set_custom_name(record, text ? text : "");
-    if (!json_string(item, "note", &text)) return false;
-    (void)lanlan_record_set_note(record, text ? text : "");
-
-    lanlan_record_set_amount_unknown(record);
-    if (!json_string(item, "unit", &text)) return false;
-    lanlan_unit_t unit = parse_unit(text);
-    if (unit >= LANLAN_UNIT_COUNT) return false;
-    if (json_number(item, "amt", &number)) {
-        lanlan_record_set_amount(record, number, unit);
-    } else if (unit != LANLAN_UNIT_NONE) {
-        return false;
-    }
-
-    if (json_number(item, "dur", &number) && number > 0) {
-        if (number > LANLAN_RECORD_DURATION_MAX) return false;
-        record->duration_minutes = (uint16_t)number;
-    }
-
-    if (!json_string(item, "st", &text)) return false;
-    record->status = (text && strcmp(text, "revoked") == 0) ? LANLAN_STATUS_REVOKED
-                                                           : LANLAN_STATUS_ACTIVE;
-
-    if (json_number(item, "seq", &number) && number >= 0) {
-        record->seq = (uint32_t)number;
-    }
-    return lanlan_record_is_valid(record) == LANLAN_RECORD_OK;
-}
-
-static bool parse_reminder(const cJSON *item, lanlan_reminder_t *reminder) {
-    const char *text = NULL;
-    if (!json_string(item, "id", &text) || !text) return false;
-    memset(reminder, 0, sizeof(*reminder));
-    if (!parse_uuid(text, reminder->id)) return false;
-    double number = 0;
-    reminder->version = (json_number(item, "v", &number) && number >= 1) ? (uint32_t)number : 1;
-    if (!json_string(item, "cat", &text)) return false;
-    reminder->category = parse_category(text);
-    if (reminder->category >= LANLAN_CAT_COUNT) return false;
-    if (!json_string(item, "sub", &text)) return false;
-    reminder->subitem = parse_subitem(reminder->category, text);
-    if (reminder->subitem >= LANLAN_SUB_COUNT) return false;
-    if (!json_string(item, "name", &text)) return false;
-    copy_text_field(text, reminder->custom_name, sizeof(reminder->custom_name),
-                    LANLAN_RECORD_CUSTOM_CHARS);
-    if (json_number(item, "en", &number)) {
-        reminder->enabled = number != 0;
-    }
-    if (!json_string(item, "t", &text)) return false;
-    reminder->time_local[0] = '\0';
-    if (text && text[0] != '\0') {
-        int hour = 0;
-        int minute = 0;
-        if (!lanlan_time_parse_hhmm(text, &hour, &minute)) return false;
-        if (lanlan_time_format_hhmm(hour, minute, reminder->time_local,
-                                    sizeof(reminder->time_local))
-            == 0) {
-            return false;
-        }
-    }
-    reminder->last_rung_day = LANLAN_REMINDER_NO_RUNG;
-    return true;
-}
-
-/* Parses one sync page into `batch`, which already carries the envelope's clock
- * fields. `cursor` and `records` are mandatory on both endpoints; `reminders`
- * and `revoked` are optional, because a /sync/snapshot page carries records and
- * members but has no revocation list, and only its first page carries the
- * reminder array. The caregiver directory in `members` is applied before any
- * record on the page is mapped to a slot. */
-static bool parse_changes(const char *body, size_t length, lanlan_sync_batch_t *batch,
-                          bool *has_more) {
-    cJSON *root = cJSON_ParseWithLength(body, length);
-    if (!root) return false;
-    bool ok = false;
-    batch->record_count = 0;
-    batch->reminder_count = 0;
-    batch->revoked_count = 0;
-    batch->cursor = 0;
-    *has_more = false;
-    do {
-        const cJSON *cursor = cJSON_GetObjectItemCaseSensitive(root, "cursor");
-        const cJSON *records = cJSON_GetObjectItemCaseSensitive(root, "records");
-        if (!cJSON_IsNumber(cursor) || !cJSON_IsArray(records)) break;
-        double cursor_value = cJSON_GetNumberValue(cursor);
-        if (cursor_value < 0 || cursor_value > (double)UINT32_MAX) break;
-        batch->cursor = (uint32_t)cursor_value;
-
-        const cJSON *has_more_item = cJSON_GetObjectItemCaseSensitive(root, "has_more");
-        *has_more = cJSON_IsTrue(has_more_item);
-
-        apply_members(root);
-
-        int32_t count = 0;
-        const cJSON *item = NULL;
-        cJSON_ArrayForEach(item, records) {
-            if (count >= (int32_t)LANLAN_CACHE_RECORD_CAPACITY) break;
-            if (!parse_record(item, batch->utc_offset_minutes, &batch->records[count])) {
-                count = -1;
-                break;
-            }
-            ++count;
-        }
-        if (count < 0) break;
-        batch->record_count = count;
-
-        const cJSON *reminders = cJSON_GetObjectItemCaseSensitive(root, "reminders");
-        if (cJSON_IsArray(reminders)) {
-            count = 0;
-            cJSON_ArrayForEach(item, reminders) {
-                if (count >= (int32_t)LANLAN_CACHE_REMINDER_CAPACITY) break;
-                if (!parse_reminder(item, &batch->reminders[count])) {
-                    count = -1;
-                    break;
-                }
-                ++count;
-            }
-            if (count < 0) break;
-            batch->reminder_count = count;
-        }
-
-        const cJSON *revoked = cJSON_GetObjectItemCaseSensitive(root, "revoked");
-        if (cJSON_IsArray(revoked)) {
-            count = 0;
-            cJSON_ArrayForEach(item, revoked) {
-                if (count >= (int32_t)LANLAN_CACHE_RECORD_CAPACITY) break;
-                if (!cJSON_IsString(item) || !item->valuestring) {
-                    count = -1;
-                    break;
-                }
-                if (!parse_uuid(item->valuestring, batch->revoked[count])) {
-                    count = -1;
-                    break;
-                }
-                ++count;
-            }
-            if (count < 0) break;
-            batch->revoked_count = count;
-        }
-        ok = true;
-    } while (false);
-    cJSON_Delete(root);
-    return ok;
-}
-
-/* The envelope's clock fields are parsed before the records: the compact record
- * itself carries no numeric offset, and the device has no timezone database. */
-static void parse_envelope_time(const char *body, size_t length, lanlan_sync_batch_t *batch) {
-    batch->utc_offset_minutes = s_offset_minutes;
-    batch->server_epoch = 0;
-    batch->has_server_time = false;
-    cJSON *root = cJSON_ParseWithLength(body, length);
-    if (!root) return;
-    const cJSON *offset = cJSON_GetObjectItemCaseSensitive(root, "utc_offset_minutes");
-    if (cJSON_IsNumber(offset)) {
-        double value = cJSON_GetNumberValue(offset);
-        if (value >= LANLAN_TIME_OFFSET_MIN && value <= LANLAN_TIME_OFFSET_MAX) {
-            batch->utc_offset_minutes = (int16_t)value;
-        }
-    }
-    const cJSON *server_time = cJSON_GetObjectItemCaseSensitive(root, "server_time");
-    if (cJSON_IsString(server_time) && server_time->valuestring) {
-        int64_t epoch = 0;
-        int16_t parsed_offset = 0;
-        if (lanlan_time_parse_rfc3339(server_time->valuestring, &epoch, &parsed_offset)
-            == LANLAN_TIME_OK) {
-            batch->server_epoch = epoch;
-            batch->has_server_time = true;
-        }
-    }
-    cJSON_Delete(root);
-}
-
-/* Reads the reminder array of a snapshot page; reminders are only sent for
- * offset 0, and their rung state is preserved by the merge. */
-static bool parse_snapshot_reminders(const char *body, size_t length,
-                                     lanlan_sync_batch_t *batch) {
-    cJSON *root = cJSON_ParseWithLength(body, length);
-    if (!root) return false;
-    bool ok = true;
-    const cJSON *reminders = cJSON_GetObjectItemCaseSensitive(root, "reminders");
-    if (cJSON_IsArray(reminders)) {
-        int32_t count = 0;
-        const cJSON *item = NULL;
-        cJSON_ArrayForEach(item, reminders) {
-            if (count >= (int32_t)LANLAN_CACHE_REMINDER_CAPACITY) break;
-            if (!parse_reminder(item, &batch->reminders[count])) {
-                ok = false;
-                break;
-            }
-            ++count;
-        }
-        batch->reminder_count = ok ? count : 0;
-    }
-    cJSON_Delete(root);
-    return ok;
-}
-
-/* ------------------------------------------------------------- sync cycle -- */
-
 static bool apply_batch(lanlan_sync_apply_mode_t mode, const lanlan_sync_batch_t *batch) {
     if (!s_hooks.apply) return false;
     return s_hooks.apply(mode, batch, s_hooks.user);
@@ -1099,11 +712,24 @@ static lanlan_sync_batch_t *work_batch(void) {
     return (lanlan_sync_batch_t *)s_hooks.work;
 }
 
+/* One pure-parse hook set, shared by both endpoints. The directory hook must
+ * fire before any record of a page is mapped, which lanlan_sync_parse_page()
+ * guarantees. */
+static lanlan_sync_parse_hooks_t parse_hooks(void) {
+    const lanlan_sync_parse_hooks_t hooks = {
+        .members = s_hooks.members,
+        .caregiver = s_hooks.caregiver,
+        .user = s_hooks.user,
+    };
+    return hooks;
+}
+
 static lanlan_sync_error_t sync_changes(uint32_t start_cursor, uint32_t *applied_cursor,
                                         bool *needs_snapshot) {
     uint32_t cursor = start_cursor;
     *needs_snapshot = false;
     *applied_cursor = start_cursor;
+    const lanlan_sync_parse_hooks_t hooks = parse_hooks();
     for (int page = 0; page < LANLAN_SYNC_MAX_PAGES; ++page) {
         char path[128];
         snprintf(path, sizeof(path), "/api/v1/sync/changes?cursor=%u&limit=%d", (unsigned)cursor,
@@ -1113,27 +739,42 @@ static lanlan_sync_error_t sync_changes(uint32_t start_cursor, uint32_t *applied
         esp_err_t err = http_run(path, NULL, 0, s_body, sizeof(s_body), &reply, &error);
         if (err != ESP_OK) return error;
         if (reply.oversize) return LANLAN_SYNC_ERROR_OVERSIZE;
-        if (reply.status == 401) {
+
+        /* Only a 409 needs the body's error code to tell "the cursor is stale"
+         * from any other conflict. */
+        char code[32];
+        code[0] = '\0';
+        if (reply.status == 409) {
+            (void)lanlan_sync_parse_error_code(s_body, reply.length, code, sizeof(code));
+        }
+        lanlan_sync_http_t classified = lanlan_sync_http_classify(reply.status, code);
+        if (classified == LANLAN_SYNC_HTTP_REJECTED) {
             /* The credential is gone: stop retrying and surface the state. */
             s_credential_rejected = true;
             state_set(LANLAN_SYNC_STATE_CREDENTIAL_REJECTED, LANLAN_SYNC_ERROR_NONE);
             return LANLAN_SYNC_ERROR_NONE;
         }
-        if (reply.status == 409) {
+        if (classified == LANLAN_SYNC_HTTP_RESYNC) {
             /* The cursor is newer than the log: resynchronize from scratch. */
+            ESP_LOGW(TAG, "cursor invalid; falling back to the snapshot");
             *needs_snapshot = true;
             return LANLAN_SYNC_ERROR_NONE;
         }
-        if (reply.status < 200 || reply.status >= 300) {
-            ESP_LOGW(TAG, "sync changes status=%d", reply.status);
+        if (classified != LANLAN_SYNC_HTTP_OK) {
+            ESP_LOGW(TAG, "sync changes status=%d (%s)", reply.status,
+                     lanlan_sync_http_name(classified));
             return LANLAN_SYNC_ERROR_HTTP_STATUS;
         }
         if (!reply.complete) return LANLAN_SYNC_ERROR_MALFORMED;
+
         lanlan_sync_batch_t *batch = work_batch();
         if (!batch) return LANLAN_SYNC_ERROR_INTERNAL;
-        parse_envelope_time(s_body, reply.length, batch);
-        bool has_more = false;
-        if (!parse_changes(s_body, reply.length, batch, &has_more)) {
+        lanlan_sync_page_info_t info;
+        lanlan_sync_parse_status_t status =
+            lanlan_sync_parse_page(LANLAN_SYNC_PAGE_CHANGES, s_body, reply.length,
+                                   s_offset_minutes, &hooks, batch, &info);
+        if (status != LANLAN_SYNC_PARSE_OK) {
+            ESP_LOGW(TAG, "changes body rejected: %s", lanlan_sync_parse_status_name(status));
             return LANLAN_SYNC_ERROR_MALFORMED;
         }
         report_envelope_clock(batch);
@@ -1142,7 +783,7 @@ static lanlan_sync_error_t sync_changes(uint32_t start_cursor, uint32_t *applied
         s_cursor = cursor;
         *applied_cursor = cursor;
         http_ack(cursor);
-        if (!has_more) return LANLAN_SYNC_ERROR_NONE;
+        if (!info.has_has_more || !info.has_more) return LANLAN_SYNC_ERROR_NONE;
     }
     /* More pages remain: the next cycle continues from the persisted cursor. */
     ESP_LOGI(TAG, "page budget reached; continuing next cycle from cursor=%u",
@@ -1150,21 +791,10 @@ static lanlan_sync_error_t sync_changes(uint32_t start_cursor, uint32_t *applied
     return LANLAN_SYNC_ERROR_NONE;
 }
 
-/* Reads the snapshot's total record count, used to jump straight to the newest
- * page instead of paging through the whole history. */
-static double parse_snapshot_total(const char *body, size_t length) {
-    cJSON *root = cJSON_ParseWithLength(body, length);
-    if (!root) return 0;
-    double total = 0;
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, "total");
-    if (cJSON_IsNumber(item)) total = cJSON_GetNumberValue(item);
-    cJSON_Delete(root);
-    return total;
-}
-
 static lanlan_sync_error_t sync_snapshot(void) {
     lanlan_sync_batch_t *batch = work_batch();
     if (!batch) return LANLAN_SYNC_ERROR_INTERNAL;
+    const lanlan_sync_parse_hooks_t hooks = parse_hooks();
 
     /* First request: one record only, which still returns the reminder list,
      * the cursor and the total, so the newest page can be fetched directly
@@ -1176,18 +806,21 @@ static lanlan_sync_error_t sync_snapshot(void) {
                              sizeof(s_body), &reply, &error);
     if (err != ESP_OK) return error;
     if (reply.oversize) return LANLAN_SYNC_ERROR_OVERSIZE;
-    if (reply.status == 401) {
+    lanlan_sync_http_t classified = lanlan_sync_http_classify(reply.status, NULL);
+    if (classified == LANLAN_SYNC_HTTP_REJECTED) {
         s_credential_rejected = true;
         state_set(LANLAN_SYNC_STATE_CREDENTIAL_REJECTED, LANLAN_SYNC_ERROR_NONE);
         return LANLAN_SYNC_ERROR_NONE;
     }
-    if (reply.status < 200 || reply.status >= 300) return LANLAN_SYNC_ERROR_HTTP_STATUS;
+    if (classified != LANLAN_SYNC_HTTP_OK) return LANLAN_SYNC_ERROR_HTTP_STATUS;
     if (!reply.complete) return LANLAN_SYNC_ERROR_MALFORMED;
 
-    parse_envelope_time(s_body, reply.length, batch);
-    batch->record_count = 0;
-    batch->revoked_count = 0;
-    if (!parse_snapshot_reminders(s_body, reply.length, batch)) {
+    lanlan_sync_page_info_t info;
+    lanlan_sync_parse_status_t status =
+        lanlan_sync_parse_page(LANLAN_SYNC_PAGE_SNAPSHOT, s_body, reply.length, s_offset_minutes,
+                               &hooks, batch, &info);
+    if (status != LANLAN_SYNC_PARSE_OK) {
+        ESP_LOGW(TAG, "snapshot head rejected: %s", lanlan_sync_parse_status_name(status));
         return LANLAN_SYNC_ERROR_MALFORMED;
     }
     s_head_reminder_count = batch->reminder_count;
@@ -1195,11 +828,10 @@ static lanlan_sync_error_t sync_snapshot(void) {
         memcpy(s_head_reminders, batch->reminders,
                (size_t)s_head_reminder_count * sizeof(s_head_reminders[0]));
     }
-    double total_value = parse_snapshot_total(s_body, reply.length);
 
     size_t offset = 0;
-    if (total_value > (double)LANLAN_CACHE_RECORD_CAPACITY) {
-        offset = (size_t)(total_value - (double)LANLAN_CACHE_RECORD_CAPACITY);
+    if (info.has_total && info.total > (int64_t)LANLAN_CACHE_RECORD_CAPACITY) {
+        offset = (size_t)(info.total - (int64_t)LANLAN_CACHE_RECORD_CAPACITY);
     }
     char path[128];
     snprintf(path, sizeof(path), "/api/v1/sync/snapshot?offset=%u&limit=%u", (unsigned)offset,
@@ -1207,12 +839,14 @@ static lanlan_sync_error_t sync_snapshot(void) {
     err = http_run(path, NULL, 0, s_body, sizeof(s_body), &reply, &error);
     if (err != ESP_OK) return error;
     if (reply.oversize) return LANLAN_SYNC_ERROR_OVERSIZE;
-    if (reply.status < 200 || reply.status >= 300) return LANLAN_SYNC_ERROR_HTTP_STATUS;
+    classified = lanlan_sync_http_classify(reply.status, NULL);
+    if (classified != LANLAN_SYNC_HTTP_OK) return LANLAN_SYNC_ERROR_HTTP_STATUS;
     if (!reply.complete) return LANLAN_SYNC_ERROR_MALFORMED;
 
-    parse_envelope_time(s_body, reply.length, batch);
-    bool has_more = false;
-    if (!parse_changes(s_body, reply.length, batch, &has_more)) {
+    status = lanlan_sync_parse_page(LANLAN_SYNC_PAGE_SNAPSHOT, s_body, reply.length,
+                                    s_offset_minutes, &hooks, batch, &info);
+    if (status != LANLAN_SYNC_PARSE_OK) {
+        ESP_LOGW(TAG, "snapshot page rejected: %s", lanlan_sync_parse_status_name(status));
         return LANLAN_SYNC_ERROR_MALFORMED;
     }
     if (s_head_reminder_count > 0) {

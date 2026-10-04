@@ -30,7 +30,7 @@ Unverified: remaining board, instrument, or user checks
 | A09 | 中文和动态文本遵循约定策略，关键字段不被截断 | `tests/test_lanlan_assets.py`（字形清单与固定字符串匹配）与 `tests/lanlan_ui/` 主机渲染环节，后者用真实的 `lanlan_ui.c` 渲染每个 240x320 屏幕并审计字形覆盖 | 主机渲染自动化；真实屏幕渲染待做 |
 | A10 | 提醒初始为禁用、可由所有者配置，并且在刷新、重启或时钟变化时绝不响两次 | `tests/test_lanlan_reminder.c` 使用注入时钟和已持久化的已触发实例；`services/lanlan/tests/test_reminders_api.py` 覆盖默认为禁用以及启用/禁用规则 | 自动化 |
 | A11 | 三按键的短按和长按、静音和熄屏唤醒行为一致，且不会误提交 | `tests/test_lanlan_model.c` 的按键序列（包括先唤醒后释放），加上已有的 BSP 按键测试 | 逻辑自动化；真实按键手感待做 |
-| A12 | 网络、音频和动画同时运行且无泄漏 | 仅主机侧生命周期测试；上机时用堆和最大块日志进行页面切换和事件循环，应用在启动时和每次同步后都会打印这些日志 | 设备测量待做 |
+| A12 | 网络、音频和动画同时运行且无泄漏 | `tools/preview_lanlan.py --mode stress` 用真实的界面与模型配合 LVGL 执行 500 次以上切页和 1000 次以上按键事件，并断言空闲池、最大连续块和存活对象数在结束后精确回到基线；应用还会在启动时和每次同步后打印空闲堆与最大内部块，供上机那一半使用 | 主机侧自动化；网络、音频与 2 小时真机测量待做 |
 | A13 | 导出与生效记录一致、备份可恢复、历史不被静默覆盖 | `services/lanlan/tests/test_export_backup.py`（CSV 和 JSON 与数据库比对、备份加恢复往返、修订历史保留） | 自动化 |
 | A14 | 完整构建通过，且固件、ELF、MAP 和分区文件对应同一个提交 | `./tools/validate.sh` 加上对内容寻址归档执行 `python3 tools/archive_firmware.py verify <bundle>` | 固件门禁已通过；M4 复跑 |
 | A15 | 源码中没有凭据、家庭记录或未经授权的照片；资源来源有记录 | `tools/check_repo.py` 密钥扫描、`.gitignore` 对数据库和部署密钥的规则，以及对 `assets/README.md` 和提交内容的人工审查 | 自动化扫描加人工审查 |

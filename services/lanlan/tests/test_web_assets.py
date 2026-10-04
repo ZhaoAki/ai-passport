@@ -166,7 +166,8 @@ class HtmlContractTest(LanlanTestCase):
 
     def test_chinese_labels_are_present(self) -> None:
         html = self.read("index.html")
-        for label in ("澜澜记录", "登录", "记录", "提醒", "宠物资料", "账号与导出"):
+        for label in ("懒懒记录", "登录", "概览", "记一笔", "记录列表", "记录详情与编辑",
+                      "提醒设置", "懒懒档案", "账号及导出"):
             self.assertIn(label, html)
 
     def test_dismissal_note_is_explicit(self) -> None:

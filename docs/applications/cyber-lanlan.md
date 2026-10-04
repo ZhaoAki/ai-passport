@@ -23,14 +23,16 @@ lifecycle and concurrency patterns already present in the repository.
 | Recent records | Previous / next record | Open the record detail | Back to home | Empty state when the cache has no record yet |
 | Record detail | Previous / next record | Switch between the compact and the full view | Back to the list | Category, local time, performer, quantity or duration, note, revision marker |
 | Companion | Switch between idle, blink and happy frames | Pet the character once (happy plus a short sound) | Back to home | A pet action never creates a care record |
-| Settings | Move between rows | Toggle or open the row | Back to home | Refresh now, global mute, reminder sound, reminder list, timezone offset, sync information, storage state |
+| Settings | Move between rows; on a timeout row, step that row's value and keep the selection | Toggle or open the row; no action on a timeout row | Back to home | Refresh now, global mute, reminder sound, reminder list, dim timeout, screen-off timeout, timezone offset, sync information, storage state |
 | Reminder list | Previous / next reminder | Nothing | Back to settings | Shows cached reminders, their configured time and their due state |
 | Status / error | Nothing | Retry the sync | Back to home | Shown when the service is unreachable, the credential is rejected, or the cache was rebuilt |
 
 Additional rules:
 
-- The first gesture after the screen turns off only wakes the display. The long press that
-  wakes the screen must not also deliver a short press when it is released.
+- The first gesture after the screen turns off only wakes the display: any key and any press
+  type is consumed by the wake, the page and the selection do not change, and the long press
+  that wakes the screen must not also deliver a short press when it is released. A dimmed but
+  still-on display does not consume a gesture.
 - Network, storage and audio work never runs in the button callback; the callback only
   enqueues a `(key, event)` pair.
 - A single application worker task owns the model, cache writes, PCM feeding and LVGL
@@ -191,8 +193,11 @@ provisioning stays a documented alternative if this proves impractical.
 - The application logs free heap and the largest free internal block at start-up and after
   each sync, so the combined Wi-Fi, TLS, UI and audio peak can be measured on hardware.
 - The idle behaviour dims the backlight after 30 seconds and turns the display off after 90
-  seconds; both are configurable. This is not deep sleep, and no battery-life claim is made
-  without measurement.
+  seconds. Both durations are configurable from the Settings page within fixed steps (dim:
+  15/30/60/120 seconds; screen-off: 60/90/180/300 seconds) and are persisted in `cfg_v1`.
+  Screen-off is always strictly greater than dim: raising dim past the stored screen-off value
+  pushes screen-off up to the next step, and a step that cannot preserve the invariant is
+  refused. This is not deep sleep, and no battery-life claim is made without measurement.
 
 ## 11. Hardware checks pending
 

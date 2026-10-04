@@ -15,7 +15,20 @@ Run it from an activated ESP-IDF environment, because cmake and ninja come from
 the ESP-IDF tools:
 
     source .../activate-idf.sh
-    python3 tools/preview_lanlan.py
+    python3 tools/preview_lanlan.py                  # 16 captures
+    python3 tools/preview_lanlan.py --mode stress    # captures + A12 stress run
+    python3 tools/preview_lanlan.py --stress         # same, shortcut spelling
+
+Modes:
+    render (default)  the 16 screen captures only.
+    stress            the captures plus the host half of acceptance item A12:
+                      >= 500 page switches across the seven screens and
+                      >= 1000 synthetic key events through the real
+                      lanlan_model_handle_key(), with LVGL rendering on, then a
+                      stability report (LVGL pool, process heap, live object
+                      count before/after/min/max). The harness exits non-zero
+                      when the pre-run baseline does not return. Every figure is
+                      a host measurement, not a device measurement.
 
 Outputs:
     build/lanlan-preview/screens/*.ppm   raw captures (gitignored)
@@ -36,6 +49,129 @@ WORKSPACE = ROOT.parent
 PPM_MAGIC = b"P6"
 PANEL_W = 240
 PANEL_H = 320
+STRESS_PREFIXES = (
+    "STRESS SUMMARY ",
+    "STRESS PAGES ",
+    "STRESS PAGE OBJECTS ",
+    "STRESS LVGL ",
+    "STRESS OBJECTS ",
+    "STRESS PROCESS ",
+)
+
+
+def parse_key_values(text):
+    values = {}
+    for token in text.split():
+        if "=" in token:
+            key, value = token.split("=", 1)
+            values[key] = value
+    return values
+
+
+def collect_stress(lines):
+    """Return (metrics, result) parsed from the harness's STRESS lines."""
+    metrics = {}
+    result = None
+    for line in lines:
+        for prefix in STRESS_PREFIXES:
+            if line.startswith(prefix):
+                metrics.update(parse_key_values(line[len(prefix) :]))
+        if line.startswith("STRESS RESULT "):
+            result = line[len("STRESS RESULT ") :].strip()
+    return metrics, result
+
+
+def as_int(value, fallback=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def mebibytes(value):
+    return "{:.2f} MB".format(as_int(value) / (1024.0 * 1024.0))
+
+
+def print_stress_summary(lines):
+    metrics, result = collect_stress(lines)
+    if not metrics:
+        print("stress: no STRESS output from the harness", file=sys.stderr)
+        return
+    print("")
+    print(
+        "stress: {} | switches={} keys={} renders={} flushes={}\n"
+        "        LVGL free {} -> {} B (min {}), used {} B (max {}), "
+        "frag {}% -> {}% (max {}%), largest free block {} -> {} B (min {})\n"
+        "        LVGL objects {} -> {} (max {} at render {}), "
+        "process heap in use {} -> {} B (max {}), peak RSS {} -> {}\n"
+        "        pages home={} records={} detail={} companion={} settings={} "
+        "reminders={} status={}\n"
+        "        page objects home={} records={} detail={} companion={} settings={} "
+        "reminders={} status={}".format(
+            result if result else "UNKNOWN",
+            metrics.get("switches", "?"),
+            metrics.get("keys", "?"),
+            metrics.get("renders", "?"),
+            metrics.get("flushes", "?"),
+            metrics.get("free_before", "?"),
+            metrics.get("free_after", "?"),
+            metrics.get("free_min", "?"),
+            metrics.get("used_after", "?"),
+            metrics.get("used_max", "?"),
+            metrics.get("frag_before", "?"),
+            metrics.get("frag_after", "?"),
+            metrics.get("frag_max", "?"),
+            metrics.get("largest_before", "?"),
+            metrics.get("largest_after", "?"),
+            metrics.get("largest_min", "?"),
+            metrics.get("objects_before", "?"),
+            metrics.get("objects_after", "?"),
+            metrics.get("objects_max", "?"),
+            metrics.get("objects_max_render", "?"),
+            metrics.get("heap_in_use_before", "?"),
+            metrics.get("heap_in_use_after", "?"),
+            metrics.get("heap_in_use_max", "?"),
+            mebibytes(metrics.get("peak_rss_before")),
+            mebibytes(metrics.get("peak_rss_after")),
+            metrics.get("home", "?"),
+            metrics.get("records", "?"),
+            metrics.get("detail", "?"),
+            metrics.get("companion", "?"),
+            metrics.get("settings", "?"),
+            metrics.get("reminders", "?"),
+            metrics.get("status", "?"),
+            metrics.get("objects_home", "?"),
+            metrics.get("objects_records", "?"),
+            metrics.get("objects_detail", "?"),
+            metrics.get("objects_companion", "?"),
+            metrics.get("objects_settings", "?"),
+            metrics.get("objects_reminders", "?"),
+            metrics.get("objects_status", "?"),
+        )
+    )
+
+
+def run_harness(binary, out_dir, stress):
+    """Run the harness, echo its output and return (returncode, lines).
+
+    The default mode inherits stdio exactly as before. The stress mode captures
+    the lines so the driver can print its own compact summary; the harness
+    line-buffers stdout so the echoed order matches the terminal."""
+    command = [str(binary), str(out_dir)]
+    if not stress:
+        completed = subprocess.run(command)
+        return completed.returncode, []
+    command.append("--stress")
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+    )
+    lines = []
+    for line in process.stdout:
+        line = line.rstrip("\n")
+        lines.append(line)
+        print(line, flush=True)
+    return process.wait(), lines
+
 
 
 def parse_ppm(path):
@@ -150,7 +286,20 @@ def main():
     parser.add_argument(
         "--no-copy", action="store_true", help="do not copy the PNGs out of the build directory"
     )
+    parser.add_argument(
+        "--mode",
+        choices=("render", "stress"),
+        default="render",
+        help="render: the 16 screen captures (default). "
+        "stress: the captures plus the A12 stability workload and report",
+    )
+    parser.add_argument(
+        "--stress",
+        action="store_true",
+        help="shortcut for --mode stress",
+    )
     args = parser.parse_args()
+    stress = args.stress or args.mode == "stress"
 
     check_environment()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -183,11 +332,14 @@ def main():
     elif not binary.exists():
         raise SystemExit("{} does not exist; drop --no-build".format(binary))
 
-    subprocess.run([str(binary), str(args.out)], check=True)
+    returncode, harness_lines = run_harness(binary, args.out, stress)
 
     ppm_files = sorted(args.out.glob("*.ppm"))
     if not ppm_files:
-        raise SystemExit("the harness produced no PPM captures in {}".format(args.out))
+        print("the harness produced no PPM captures in {}".format(args.out), file=sys.stderr)
+        if stress:
+            print_stress_summary(harness_lines)
+        return returncode if returncode != 0 else 1
 
     rows = []
     for ppm in ppm_files:
@@ -221,7 +373,11 @@ def main():
     print("{} PNG files in {}".format(len(rows), args.out))
     if not args.no_copy:
         print("{} PNG files copied to {}".format(copied, args.copy_dir))
-    return 0
+    if stress:
+        print_stress_summary(harness_lines)
+    if returncode != 0:
+        print("harness exited with code {}".format(returncode), file=sys.stderr)
+    return returncode
 
 
 if __name__ == "__main__":
