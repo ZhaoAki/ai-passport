@@ -31,7 +31,20 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=24
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
 
-# Offline app: do not allocate Bluetooth or Wi-Fi stacks.
+# Cyber Lanlan is a networked application: it needs the Wi-Fi station stack and
+# the ESP-TLS client. Bluetooth stays disabled because device provisioning runs
+# over the USB serial console, which keeps internal RAM free for Wi-Fi, TLS,
+# LVGL and audio on this PSRAM-less board.
 CONFIG_BT_ENABLED=n
 CONFIG_LV_TXT_ENC_UTF8=y
 CONFIG_LV_USE_FONT_PLACEHOLDER=y
+
+# HTTPS to the care service must verify the server certificate. The bundle keeps
+# verification on without embedding a project-specific PEM file; never set
+# CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY in a delivered configuration.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
+
+# app_main only initializes BSP drivers and creates the application workers; the
+# larger stacks live on those workers.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096

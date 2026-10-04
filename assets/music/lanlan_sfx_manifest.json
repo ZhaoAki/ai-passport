@@ -1,0 +1,25 @@
+{
+  "format": "PCM s16le mono 16000 Hz",
+  "license": "self-produced tones and synthetic noise, no third-party audio",
+  "sha256": "7cb23ee23c785464f13ff6d2ceceffb35f908b2e2a62e2b70a41a523cf1640e7",
+  "clips": [
+    {
+      "name": "bark",
+      "offset": 0,
+      "bytes": 10880,
+      "sha256": "cf65db2529ebca9b72a6ca94f057e5700564d577b3bbd2ccdb9f8cd27dbce9a3"
+    },
+    {
+      "name": "chirp",
+      "offset": 10880,
+      "bytes": 8320,
+      "sha256": "6463c26286c041d292d9bb508fbc4b6b58f2e575536d324bc1206db16450d655"
+    },
+    {
+      "name": "reminder",
+      "offset": 19200,
+      "bytes": 14080,
+      "sha256": "1664aa10b91ce9b8357d0986ba0798c7b21f8dbd82fb5528a9b8b5f139122b55"
+    }
+  ]
+}

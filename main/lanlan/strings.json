@@ -1,0 +1,137 @@
+{
+  "_comment": "Single source of truth for every fixed user-visible string of the Cyber Lanlan application. Regenerate main/lanlan_strings.h/.c and the font subsets with tools/generate_lanlan_assets.py after editing. Free caregiver notes are server data and are deliberately not part of this inventory.",
+  "app": {
+    "pet_name": "懒懒"
+  },
+  "pages": {
+    "home": "懒懒",
+    "records": "最近记录",
+    "detail": "记录详情",
+    "companion": "陪伴",
+    "settings": "设置",
+    "reminders": "提醒",
+    "status": "同步状态"
+  },
+  "home": {
+    "entry_today": "今天",
+    "entry_records": "最近记录",
+    "entry_companion": "陪伴",
+    "entry_settings": "设置",
+    "clock_untrusted": "时间还没校准"
+  },
+  "records": {
+    "empty": "还没有记录",
+    "empty_untrusted_clock": "还没同步，先看看最近的缓存记录",
+    "open_detail": "查看详情",
+    "more_rows": "更多记录"
+  },
+  "detail": {
+    "view_compact": "简版",
+    "view_full": "完整",
+    "performer": "执行人",
+    "duration": "时长",
+    "amount": "数量",
+    "note": "备注",
+    "no_note": "没有备注",
+    "revised": "已修改"
+  },
+  "companion": {
+    "state_idle": "发呆",
+    "state_blink": "眨眼",
+    "state_happy": "开心",
+    "pet_hint": "按 OK 摸摸头"
+  },
+  "settings": {
+    "row_refresh": "立即刷新",
+    "row_mute": "全局静音",
+    "row_reminder_sound": "提醒声音",
+    "row_reminder_list": "提醒列表",
+    "row_timezone": "时区偏移",
+    "row_sync": "同步信息",
+    "row_storage": "存储状态",
+    "value_on": "开",
+    "value_off": "关"
+  },
+  "reminders": {
+    "empty": "还没有提醒",
+    "due": "该做了",
+    "sound_off": "提醒声音已关",
+    "disabled": "已关闭",
+    "dismiss_note": "划走或离开页面不算完成，都要在手机上记录"
+  },
+  "status": {
+    "ok": "连接正常",
+    "offline": "离线，正在重试",
+    "credential_rejected": "凭证已失效，请重新配置",
+    "cache_rebuilt": "缓存已重建，正在重新同步",
+    "retry_hint": "按 OK 重试同步"
+  },
+  "sync": {
+    "never": "还没同步",
+    "just_now": "刚刚同步",
+    "minutes_ago": "分钟前",
+    "hours_ago": "小时前",
+    "age_prefix": "数据",
+    "detail": "上次同步",
+    "cache_count": "缓存",
+    "cursor": "位置",
+    "records_unit": "条"
+  },
+  "errors": {
+    "network": "网络不可用",
+    "server": "服务暂时不可用",
+    "storage": "存储写入失败",
+    "cache": "缓存读取失败，已重建",
+    "audio": "声音播放失败"
+  },
+  "caregivers": {
+    "hehe": "乐乐",
+    "yangyang": "洋洋",
+    "unknown": "未知"
+  },
+  "categories": {
+    "meal": "喂食",
+    "water": "喝水",
+    "care": "护理",
+    "cleaning": "清洁",
+    "walk": "遛狗",
+    "other": "其他"
+  },
+  "subitems": {
+    "bath": "洗澡",
+    "grooming": "梳毛",
+    "teeth": "刷牙",
+    "comb": "整理毛发",
+    "care_other": "其他",
+    "ear": "掏耳朵",
+    "paw": "剪指甲",
+    "pad": "擦脚垫",
+    "litter": "清猫砂",
+    "cleaning_other": "其他"
+  },
+  "cleaning_presets": {
+    "ear": "掏耳朵",
+    "paw": "剪指甲",
+    "pad": "擦脚垫",
+    "litter": "清猫砂",
+    "other": "其它清洁"
+  },
+  "units": {
+    "g": "克",
+    "ml": "毫升",
+    "scoop": "勺",
+    "cup": "杯",
+    "piece": "块",
+    "bag": "袋",
+    "bowl": "碗",
+    "none": ""
+  },
+  "quantity": {
+    "unknown": "未知",
+    "duration_minutes": "分钟",
+    "duration_unset": "",
+    "amount_unknown": "未记录数量",
+    "date_month_unit": "月",
+    "date_day_unit": "日"
+  }
+}

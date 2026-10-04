@@ -35,9 +35,28 @@ run_static_checks() {
         -o "${test_dir}/test_demo_navigation"
     "${test_dir}/test_demo_navigation"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
-        tests/test_korean_model.c main/korean_model.c \
-        -o "${test_dir}/test_korean_model"
-    "${test_dir}/test_korean_model"
+        tests/test_lanlan_time.c main/lanlan_time.c \
+        -o "${test_dir}/test_lanlan_time"
+    "${test_dir}/test_lanlan_time"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_lanlan_record.c main/lanlan_record.c main/lanlan_time.c main/lanlan_strings.c \
+        -o "${test_dir}/test_lanlan_record"
+    "${test_dir}/test_lanlan_record"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_lanlan_cache.c main/lanlan_cache.c main/lanlan_record.c main/lanlan_time.c \
+        main/lanlan_strings.c \
+        -o "${test_dir}/test_lanlan_cache"
+    "${test_dir}/test_lanlan_cache"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_lanlan_reminder.c main/lanlan_reminder.c main/lanlan_cache.c \
+        main/lanlan_record.c main/lanlan_time.c main/lanlan_strings.c \
+        -o "${test_dir}/test_lanlan_reminder"
+    "${test_dir}/test_lanlan_reminder"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_lanlan_model.c main/lanlan_model.c main/lanlan_cache.c main/lanlan_record.c \
+        main/lanlan_reminder.c main/lanlan_time.c main/lanlan_strings.c \
+        -o "${test_dir}/test_lanlan_model"
+    "${test_dir}/test_lanlan_model"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_display_rounding"
@@ -67,7 +86,8 @@ run_static_checks() {
             -o "${test_dir}/test_demo_${demo}_runtime"
         "${test_dir}/test_demo_${demo}_runtime"
     done
-    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_korean_assets.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_lanlan_assets.py
+    PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s services/lanlan/tests -t .
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_deep_sleep_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_check_repo.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_verify_firmware.py

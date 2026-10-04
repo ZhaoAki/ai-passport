@@ -62,7 +62,7 @@ NVS namespace `lanlan` (the partition stays at the tracked 24 KB; no repartition
 | Key | Content | Bound |
 | --- | --- | --- |
 | `cfg_v1` | Schema version, UTC offset in minutes, global mute, reminder sound, dim and screen-off timeouts, service base URL | 128 B |
-| `cache_v1` | Compact record cache: header plus fixed-size entries | about 4 KB |
+| `cache_v1` | Compact record cache: header, fixed-size entries and a CRC32 trailer | at most 8 KB |
 | `tomb_v1` | Revocation tombstones (16-byte ids plus version) | about 512 B |
 | `rem_v1` | Cached reminders plus the last rung instance per reminder | about 1 KB |
 | `cred_v1` | Device credential (token plus device id) and the Wi-Fi SSID and password | about 256 B |
@@ -73,6 +73,15 @@ Cache rules:
   device only. Service history is never deleted.
 - A record is a fixed-size binary entry; `amount` is stored with an "unknown" flag so an
   unset quantity can never be displayed as `0`.
+- The device entry keeps a bounded 48-byte UTF-8 preview of the note (the largest value
+  that still satisfies the entry and blob budgets below) and a 24-byte custom name. The
+  full note stays on the service and the phone, and the device renders a shortened note
+  with an explicit truncation marker instead of pretending it is complete.
+- Enforced size budgets, asserted by host tests: one entry is at most 160 bytes, the whole
+  cache blob at most 8 KB, and the live cache plus its staging buffer at most 16 KB of
+  static RAM. The blob is one canonical fixed-offset serialization covered by a CRC32
+  trailer, written with a single NVS commit together with the new cursor. The 24 KB NVS
+  partition is sufficient and is not repartitioned.
 - A sync batch is applied into a temporary buffer, then the whole cache, the tombstones, the
   reminders and the new cursor are written in **one** NVS commit. The cursor advances only
   after that commit returns `ESP_OK`.

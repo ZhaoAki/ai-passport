@@ -11,3 +11,12 @@ managed_components/
 /.agents/skills/passport-build
 /.agents/skills/passport-device-test
 /.agents/skills/passport-debug
+
+# Cyber Lanlan service state: local databases, backups and deployment secrets
+# contain real family records and credentials and must never be committed.
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+/services/**/backups/
+/deploy/.env
+/deploy/secrets/
