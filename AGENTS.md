@@ -94,3 +94,11 @@ and obtain approval before flashing; detection alone is not consent.
 Create commits and push only when the user requests them or the active workflow explicitly requires them. Ordinary feature, application, and documentation pull requests must not edit `docs/CHANGELOG.md` or `docs/CHANGELOG.zh_CN.md`; describe user-visible behavior, compatibility, and release-flow impact in the pull-request body and authoritative documentation instead. During release preparation, the release maintainer aggregates merged user-visible changes into both changelog files before creating the tag.
 
 Community guidance is in `.github/CONTRIBUTING.md`, `.github/CODE_OF_CONDUCT.md`, `.github/SECURITY.md`, and `.github/SUPPORT.md`.
+
+## Cyber Lanlan handoff preference
+
+For Cyber Lanlan continuation, keep `docs/applications/DEEPSEEK-HANDOFF.md` and its Chinese pair
+current at release milestones and before a usage-related pause. When an active
+agent can read its usage, check before long work and at milestones; at 80% of the
+five-hour allowance consumed, prioritize recording state and next actions. This
+is the owner's workflow preference, not authorization for background scheduling.

@@ -88,3 +88,7 @@ Unverified: 仍需板卡、仪器或用户确认的事项
 仅在用户请求或当前工作流明确要求时创建 commit 和 push。普通功能、应用和文档 PR 不得修改 `docs/CHANGELOG.md` 或 `docs/CHANGELOG.zh_CN.md`；用户可见行为、兼容性和发布流程影响改为写入 PR 正文及对应权威文档。发布准备期间，由发布负责人在创建 tag 前把已合并的用户可见变化统一汇总到两份变更日志。
 
 社区规范见 `.github/CONTRIBUTING.zh_CN.md`、`.github/CODE_OF_CONDUCT.zh_CN.md`、`.github/SECURITY.zh_CN.md` 与 `.github/SUPPORT.zh_CN.md`。
+
+## 赛博懒懒交接偏好
+
+赛博懒懒每次版本交付，以及用量临近上限时，都应更新 `docs/applications/DEEPSEEK-HANDOFF.md` 和中文配对文档。当前代理能读取用量时，在长任务前和关键阶段检查；5 小时额度已用达到 80% 时，优先记录当前状态和下一步。这是用户的协作偏好，不代表授权创建后台定时任务。
