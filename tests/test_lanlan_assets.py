@@ -89,6 +89,11 @@ def rendered_width_1_16(path, text):
 
 
 class LanlanAssets(unittest.TestCase):
+    def test_host_display_pool_matches_firmware(self):
+        firmware = int(re.search(r'CONFIG_LV_MEM_SIZE_KILOBYTES=(\d+)', read('sdkconfig.defaults')).group(1))
+        host = int(re.search(r'#define LV_MEM_SIZE \((\d+) \* 1024\)', read('tests/lanlan_ui/lv_conf.h')).group(1))
+        self.assertEqual(firmware, host, 'UI stress must use the firmware allocation budget')
+
     def test_generated_strings_match_the_json_source(self):
         document = json.loads(read('main/lanlan/strings.json'))
         header = read('main/lanlan_strings.h')
@@ -148,35 +153,32 @@ class LanlanAssets(unittest.TestCase):
             self.assertNotIn('U+9F98', body)
         self.assertGreaterEqual(len(required), 200)
 
-    def test_placeholder_art_is_marked_and_correctly_sized(self):
-        for name in SPRITE_FILES:
-            self.assertTrue((ROOT / 'assets/images' / name).is_file(), name)
-        body = read('assets/images/lanlan_sprites.c')
-        # The banner must say, in capital letters, that this is not final art.
-        self.assertIn('PLACEHOLDER ART', body)
-        self.assertIn('NOT THE OWNER-APPROVED FINAL APPEARANCE', body)
-        frames = re.findall(r'(\w+_data)\[\] = \{', body)
-        self.assertEqual(len(frames), 5, 'expected idle x2, blink, happy and bark frames')
-        self.assertTrue(any('idle' in name for name in frames))
-        self.assertTrue(any('blink' in name for name in frames))
-        self.assertTrue(any('happy' in name for name in frames))
-        self.assertTrue(any('bark' in name for name in frames))
+    def test_character_frames_match_converted_atlas_and_memory_budget(self):
+        directory = ROOT / 'assets/images/lanlan-v2'
+        manifest = json.loads((directory / 'manifest.json').read_text())
+        raw = (directory / 'frames.rgb565').read_bytes()
+        self.assertEqual(hashlib.sha256((directory / 'atlas.png').read_bytes()).hexdigest(), manifest['source_sha256'])
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), manifest['sha256'])
+        self.assertEqual(manifest['format'], 'RGB565 big-endian')
+        self.assertEqual((manifest['width'], manifest['height']), (96, 96))
+        self.assertEqual([f['name'] for f in manifest['frames']],
+                         ['idle_0', 'idle_1', 'blink', 'tilt', 'happy', 'bark'])
+        source = read('assets/images/lanlan_sprites.c')
+        encoded = bytes(int(v, 16) for v in re.findall(r'0x([0-9A-F]{2})', source))
+        self.assertEqual(encoded, raw, 'compiled pixels must match converted assets')
+        self.assertEqual(len(raw), 6 * 96 * 96 * 2)
+        self.assertEqual(len({f['sha256'] for f in manifest['frames']}), 6)
+        for index, frame in enumerate(manifest['frames']):
+            self.assertEqual(frame['offset'], index * 18432)
+            self.assertEqual(frame['bytes'], 18432)
+            data = raw[frame['offset']:frame['offset'] + frame['bytes']]
+            self.assertEqual(hashlib.sha256(data).hexdigest(), frame['sha256'])
         header = read('assets/images/lanlan_sprites.h')
         self.assertIn('LANLAN_SPRITE_WIDTH 96', header)
         self.assertIn('LANLAN_SPRITE_HEIGHT 96', header)
-        # The descriptor enum lives in the hand-written header; the generated
-        # table must expose one entry per state.
-        for state in ('IDLE_0', 'IDLE_1', 'BLINK', 'HAPPY', 'BARK'):
-            self.assertIn('LANLAN_SPRITE_%s' % state, header)
-        self.assertIn('lanlan_sprites[LANLAN_SPRITE_COUNT]', body)
-        self.assertEqual(body.count(', 96, 96}'), 5)
-        # The frames are real RGB565 data, not an empty placeholder: one of the
-        # palette colours must appear in the payload.
-        rows = re.findall(r'0x([0-9A-F]{2})', body)
-        self.assertGreater(len(rows), 90000)
-        # The cream body colour must appear in the payload, so the frames are
-        # real drawn data rather than an empty placeholder buffer.
-        self.assertGreater(body.count('0xFE, 0xF3'), 1000)
+        for state in ('IDLE_0', 'IDLE_1', 'BLINK', 'TILT', 'HAPPY', 'BARK'):
+            self.assertIn('LANLAN_SPRITE_' + state, header)
+        self.assertEqual(source.count(', 96, 96}'), 6)
 
     def test_pcm_manifest_matches_the_pcm_file(self):
         pcm = (ROOT / 'assets/music/lanlan_sfx_16k.pcm').read_bytes()

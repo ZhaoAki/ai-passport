@@ -211,11 +211,14 @@
     if (!parts) {
       return null;
     }
-    var millis = Date.UTC(
+    var date = new Date(
       Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]),
       Number(parts[4]), Number(parts[5]), 0
     );
-    return new Date(millis).toISOString().replace(/\.\d{3}Z$/, "Z");
+    if (date.getFullYear() !== Number(parts[1]) || date.getMonth() !== Number(parts[2]) - 1 ||
+        date.getDate() !== Number(parts[3]) || date.getHours() !== Number(parts[4]) ||
+        date.getMinutes() !== Number(parts[5])) return null;
+    return date.toISOString().replace(/\.\d{3}Z$/, "Z");
   }
 
   function text(value) {
@@ -753,9 +756,8 @@
     nodes.recordEstimated.checked = record.time_confidence === "estimated";
     fillMembers();
     nodes.recordPerformer.value = record.performed_by;
-    if (record.amount_value !== null && record.amount_value !== undefined) {
-      nodes.recordAmount.value = String(record.amount_value);
-    }
+    nodes.recordAmount.value = record.amount_value === null || record.amount_value === undefined
+      ? "" : String(record.amount_value);
     if (record.amount_unit) {
       syncCategoryFields();
       nodes.recordUnit.value = record.amount_unit;
@@ -838,6 +840,17 @@
     state.step += 1;
     api(method, path, body).then(function (result) {
       nodes.recordSubmit.disabled = false;
+      if (result.status === 409 && result.data && result.data.error &&
+          result.data.error.code === "idempotency_conflict") {
+        // The first POST succeeded but its response was lost. Keep the edited
+        // fields, and let the user explicitly save them as a revision.
+        state.editing = result.data.record;
+        nodes.recordSubmit.textContent = "保存修改";
+        showError(nodes.recordFeedback, "上一次提交已经保存。你后来改动了内容，当前填写已保留，再点保存修改即可更新那笔记录。");
+        state.formDirty = true;
+        nodes.recordRetry.hidden = true;
+        return;
+      }
       if (result.status === 409 && result.data && result.data.record) {
         showConflictRecord(result.data.record);
         showError(

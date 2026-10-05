@@ -27,7 +27,7 @@ Store reusable source images and generated display assets in `images/`.
 | [`images/readme-hardware-specs.png`](images/readme-hardware-specs.png) | 2172 × 724, PNG RGBA | Optional technical infographic retained as a reference asset; it is no longer used as the homepage hero. Generated for this repository with the built-in image generation tool on 2026-09-17; the six labels and values were checked against the documented hardware contract. |
 | [`images/logo-wordmark.png`](images/logo-wordmark.png) | 1648 × 336, PNG RGBA | Transparent black wordmark extracted from the repository's original `images/logo.png`; embedded in both project README files for light backgrounds. |
 | [`images/logo-wordmark-dark.png`](images/logo-wordmark-dark.png) | 1648 × 336, PNG RGBA | White version of the extracted wordmark, used by the README `<picture>` element when GitHub is in dark mode. |
-| [`images/lanlan_sprites.c`](images/lanlan_sprites.c), [`images/lanlan_sprites.h`](images/lanlan_sprites.h) | 5 frames of 96 × 96 RGB565 (18,432 bytes each) plus the descriptor header | Cyber Lanlan companion frames (idle ×2, blink, happy, bark). **PLACEHOLDER ART: this is not the owner-approved final appearance.** It exists only to validate layout, animation timing and rendering until the owner freezes a sprite set. Generated from simple primitives by `tools/generate_lanlan_assets.py`; no third-party artwork is embedded. |
+| [`images/lanlan_sprites.c`](images/lanlan_sprites.c), [`images/lanlan_sprites.h`](images/lanlan_sprites.h) | 6 × 96 × 96 RGB565; 18,432 bytes per frame | Lanlan character v2: idle ×2, blink, tilt, happy and bark. Built-in imagegen follows the prior character design and owner-supplied GIF motion references. Source atlas and conversion hashes: `images/lanlan-v2/`. |
 
 - Use descriptive names and document dimensions, pixel format, conversion steps, and destination.
 - Prefer formats suitable for the 240 × 320 RGB565 display and account for Flash and internal RAM.
@@ -52,7 +52,7 @@ byte-identical output. `main/lanlan/strings.json` is the single source of truth 
 - `fonts/NotoSansCJKsc-Regular.otf` and `fonts/NotoSansCJK-OFL.txt`: [Noto CJK](https://github.com/notofonts/noto-cjk), SIL OFL. Source font for the generated subsets; the OTF is not compiled into the firmware.
 - `fonts/lanlan_symbols.txt`: the exact code-point inventory (ASCII plus every full-width character of `main/lanlan/strings.json` and the fixed labels in `main/lanlan_record.c` and `main/lanlan_model.c`).
 - `fonts/lanlan_font_16.c`, `fonts/lanlan_font_24.c`: uncompressed 2-bpp LVGL subsets, font names `lanlan_font_16` and `lanlan_font_24`, generated with the pinned `lv_font_conv` 1.5.3. The exact command line, converter and source font are recorded in each generated file header, and the generator re-verifies that every requested code point is present.
-- `images/lanlan_sprites.c` and `images/lanlan_sprites.h`: placeholder companion frames, see the images table above.
+- `images/lanlan_sprites.c` and `images/lanlan_sprites.h`: reference-based companion frames, see the images table above.
 - `music/lanlan_sfx_16k.pcm`: 16 kHz signed 16-bit mono PCM containing three short self-produced clips (bark, chirp, reminder tone). No third-party audio is used; the tones are synthesised by the generator from sine waves and deterministic synthetic noise.
 - `music/lanlan_sfx_manifest.json`: clip names, byte offsets, byte lengths, per-clip SHA-256 and the SHA-256 of the whole pack. `main/lanlan_sfx_data.h` and `main/lanlan_sfx_data.c` expose the same offsets to the firmware.
 - Free caregiver notes are server data and are not part of this inventory; the device keeps only a bounded note preview, and the UI marks a truncated note explicitly.
@@ -67,4 +67,27 @@ python3 tools/generate_lanlan_assets.py \
 
 `tools/validate.sh` runs `tests/test_lanlan_assets.py`, which fails when a fixed string is added without
 regenerating the fonts and the sprite/sound manifests, when the PCM pack and its manifest disagree, or
-when the placeholder-art marker is missing.
+when sprite pixels differ from the checked-in conversion manifest.
+
+## Character v2 regeneration
+
+The generated art atlas is retained at `images/lanlan-v2/atlas.png`, with its
+imagegen prompt in `prompt.txt`. It follows the owner's previously generated
+Lanlan character and 12 transparent GIF references; it contains no original
+family photograph. This is a project-specific generated asset, not third-party
+stock artwork. Owner visual acceptance remains pending.
+
+Only atlas import requires Pillow: `python3 tools/import_lanlan_sprites.py`.
+It slices the six cells, exports the web portrait, downsizes to 96 × 96, composites
+onto the companion card's white background, and writes RGB565 plus checksums.
+`python3 tools/generate_lanlan_assets.py --skip-fonts` then regenerates the C arrays
+from these fixed converted inputs without Pillow or a new image generation call.
+The full frame set stays in Flash (110,592 bytes); RAM still uses one 18,432-byte
+canvas. The original GIF captions and files are not embedded in the application.
+
+## Interaction audio v0.3
+
+The PCM pack now has four clips: three original synthesized puppy vocalizations
+(`bark`, the historical `chirp` name for two arfs, and `bark_soft`) plus the
+unchanged reminder chime. It is 47,678 bytes. These are synthetic sounds, not
+animal recordings; see [interaction notes](../docs/applications/cyber-lanlan-interaction.md).

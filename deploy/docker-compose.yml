@@ -2,7 +2,7 @@
 #
 #   cd deploy
 #   cp lanlan.env.example lanlan.env    # then edit it: domain, secrets, paths
-#   docker compose up -d
+#   docker compose --env-file lanlan.env up -d
 #
 # Caddy terminates HTTPS and is the only container that publishes a port. The
 # service stays on the internal network and is never exposed directly.

@@ -64,6 +64,7 @@ static lv_timer_t *s_timer;
 typedef enum {
     UI_ANIM_IDLE = 0,
     UI_ANIM_BLINK,
+    UI_ANIM_TILT,
     UI_ANIM_HAPPY,
     UI_ANIM_BARK
 } ui_anim_t;
@@ -489,6 +490,7 @@ static void sprite_blit(uint32_t frame_index) {
 static uint32_t animation_frame(void) {
     switch (s_animation) {
     case UI_ANIM_BLINK: return LANLAN_SPRITE_BLINK;
+    case UI_ANIM_TILT: return LANLAN_SPRITE_TILT;
     case UI_ANIM_HAPPY: return LANLAN_SPRITE_HAPPY;
     case UI_ANIM_BARK: return LANLAN_SPRITE_BARK;
     default: return s_idle_frame ? LANLAN_SPRITE_IDLE_1 : LANLAN_SPRITE_IDLE_0;
@@ -518,8 +520,9 @@ static void animation_tick(uint32_t now) {
         }
         if (s_next_blink == 0) s_next_blink = now + 2000u;
         if ((int32_t)(now - s_next_blink) >= 0) {
-            s_animation = UI_ANIM_BLINK;
-            s_animation_until = now + UI_BLINK_HOLD_MS;
+            bool tilt = (random_next() % 3u) == 0;
+            s_animation = tilt ? UI_ANIM_TILT : UI_ANIM_BLINK;
+            s_animation_until = now + (tilt ? 650u : UI_BLINK_HOLD_MS);
             s_next_blink = now + 2500u + (random_next() % 4500u);
         }
     }
@@ -769,6 +772,17 @@ void lanlan_ui_companion_react(lanlan_character_t state) {
     default: s_animation = UI_ANIM_IDLE; break;
     }
     s_animation_until = now + UI_HAPPY_HOLD_MS;
+    if (s_canvas) sprite_blit(animation_frame());
+}
+
+void lanlan_ui_companion_pet(lanlan_reaction_t reaction) {
+    switch (reaction) {
+    case LANLAN_REACTION_BLINK: s_animation = UI_ANIM_BLINK; break;
+    case LANLAN_REACTION_TILT: s_animation = UI_ANIM_TILT; break;
+    case LANLAN_REACTION_BARK: s_animation = UI_ANIM_BARK; break;
+    default: s_animation = UI_ANIM_HAPPY; break;
+    }
+    s_animation_until = lv_tick_get() + 900u;
     if (s_canvas) sprite_blit(animation_frame());
 }
 

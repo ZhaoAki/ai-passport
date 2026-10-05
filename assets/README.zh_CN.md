@@ -25,7 +25,7 @@
 | [`images/readme-hardware-specs.png`](images/readme-hardware-specs.png) | 2172 × 724，PNG RGBA | 保留为可选技术参考图，不再用于首页主视觉。于 2026-09-17 使用内置图像生成工具为本仓库生成；已根据文档中的硬件能力契约核对图中的六项标签与参数。 |
 | [`images/logo-wordmark.png`](images/logo-wordmark.png) | 1648 × 336，PNG RGBA | 从仓库原始 `images/logo.png` 中精确裁切并去除背景的黑色字标；用于中英文项目 README 的浅色主题。 |
 | [`images/logo-wordmark-dark.png`](images/logo-wordmark-dark.png) | 1648 × 336，PNG RGBA | 提取字标的白色版本；README 使用 `<picture>` 在 GitHub 深色主题下显示。 |
-| [`images/lanlan_sprites.c`](images/lanlan_sprites.c)、[`images/lanlan_sprites.h`](images/lanlan_sprites.h) | 5 帧 96 × 96 RGB565（每帧 18432 字节）与描述符头文件 | 懒懒伴侣动画帧（待机 ×2、眨眼、开心、吠叫）。**占位美术：这不是主人确认的最终形象。** 仅用于验证布局、动画时序与渲染，直到主人冻结正式帧集。由 `tools/generate_lanlan_assets.py` 用简单图元绘制，未嵌入任何第三方美术资源。 |
+| [`images/lanlan_sprites.c`](images/lanlan_sprites.c)、[`images/lanlan_sprites.h`](images/lanlan_sprites.h) | 6 帧 96 × 96 RGB565，每帧 18,432 字节 | 懒懒角色第二版，含待机两帧、眨眼、歪头、开心和叫声表情。内置 imagegen 沿用原设计并参考用户提供的 GIF 动作。原图和转换校验见 `images/lanlan-v2/`。 |
 
 - 使用描述性命名，并记录尺寸、像素格式、转换步骤与目标路径。
 - 优先采用适合 240 × 320 RGB565 显示的格式，并纳入 Flash 与内部 RAM 考量。
@@ -50,7 +50,7 @@
 - `fonts/NotoSansCJKsc-Regular.otf` 和 `fonts/NotoSansCJK-OFL.txt`：来自 [Noto CJK](https://github.com/notofonts/noto-cjk)，采用 SIL OFL 许可。作为子集的源字体，OTF 本身不编入固件。
 - `fonts/lanlan_symbols.txt`：精确的字符清单（ASCII 加上 `main/lanlan/strings.json` 以及 `main/lanlan_record.c`、`main/lanlan_model.c` 中固定标签的全部全角字符）。
 - `fonts/lanlan_font_16.c`、`fonts/lanlan_font_24.c`：2 bpp、无压缩的 LVGL 子集，字体名分别为 `lanlan_font_16` 与 `lanlan_font_24`，使用固定版本的 `lv_font_conv` 1.5.3 生成。生成的每个文件头部都记录了确切命令行、转换器与源字体；生成脚本还会逐个校验所需字符确实存在。
-- `images/lanlan_sprites.c` 与 `images/lanlan_sprites.h`：伴侣占位动画帧，见上方图片表。
+- `images/lanlan_sprites.c` 与 `images/lanlan_sprites.h`：按参考形象生成的伙伴动画帧，见上方图片表。
 - `music/lanlan_sfx_16k.pcm`：16 kHz、16 位有符号单声道 PCM，包含三段自制短音效（吠叫、欢快提示音、柔和提醒音）。不使用任何第三方音频，音调由生成脚本用正弦波与确定性合成噪声生成。
 - `music/lanlan_sfx_manifest.json`：音频段名称、字节偏移、字节长度、每段 SHA-256 以及整包的 SHA-256。`main/lanlan_sfx_data.h` 与 `main/lanlan_sfx_data.c` 向固件暴露同一份偏移。
 - 主人手写的备注属于服务端数据，不在本清单内；设备只保留有上限的备注预览，界面会明确标注备注已被截断。
@@ -64,4 +64,16 @@ python3 tools/generate_lanlan_assets.py \
 ```
 
 `tools/validate.sh` 会运行 `tests/test_lanlan_assets.py`：新增固定文案却未重新生成字体、动画或音频清单，
-PCM 与清单不一致，或占位美术标记缺失时，该测试都会失败。
+PCM 与清单不一致，或精灵数据与转换清单不一致时，该测试都会失败。
+
+## 第二版角色素材
+
+`images/lanlan-v2/atlas.png` 保留内置 imagegen 生成的动作图，提示词见 `prompt.txt`。角色沿用此前设计，动作参考用户提供的 12 张透明 GIF；工程不包含原始家庭照片。这是项目专用的生成素材，外观仍待所有者确认。
+
+运行 `python3 tools/import_lanlan_sprites.py` 需要 Pillow。脚本按固定网格切帧，导出网页形象，将设备帧缩小到 96 × 96，并按白色卡片背景转换为 RGB565，写入校验信息。之后运行 `python3 tools/generate_lanlan_assets.py --skip-fonts`，即可由固定素材重建 C 数组，无需再次生成图像。
+
+六帧占用 110,592 字节 Flash，运行时仍只用一个 18,432 字节画布。GIF 中的文字与原始文件不进入应用。
+
+## v0.3 互动声音
+
+PCM 音效包现在有四段，共 47,678 字节：三种原创合成小狗短叫（`bark`、保留旧名的双声 `chirp`、`bark_soft`）和原有提醒铃声。这些是合成声音，不是真实狗狗录音。详见[互动说明](../docs/applications/cyber-lanlan-interaction.zh_CN.md)。

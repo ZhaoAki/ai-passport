@@ -2,7 +2,8 @@
 #include "lanlan_sfx_data.h"
 
 const lanlan_sfx_clip_t lanlan_sfx_clips[LANLAN_SFX_COUNT] = {
-    {"bark", 0u, 10880u},
-    {"chirp", 10880u, 8320u},
-    {"reminder", 19200u, 14080u},
+    {"bark", 0u, 8958u},
+    {"chirp", 8958u, 15040u},
+    {"reminder", 23998u, 14080u},
+    {"bark_soft", 38078u, 9600u},
 };

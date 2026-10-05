@@ -99,7 +99,13 @@ run_static_checks() {
             -o "${test_dir}/test_demo_${demo}_runtime"
         "${test_dir}/test_demo_${demo}_runtime"
     done
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_lanlan_reaction.c main/lanlan_reaction.c -o "${test_dir}/test_lanlan_reaction"
+    "${test_dir}/test_lanlan_reaction"
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_lanlan_assets.py
+    for test_tz in UTC Asia/Shanghai America/New_York; do
+        TZ="$test_tz" node tests/test_lanlan_web.js
+    done
     PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s services/lanlan/tests -t .
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_deep_sleep_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_check_repo.py

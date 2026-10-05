@@ -60,7 +60,12 @@ class WebAssetServingTest(LanlanTestCase):
                 response = client.get("/" + relative)
                 self.assertEqual(200, response.status, "%s -> %s" % (relative, response.text()))
                 self.assertTrue(response.body, relative)
-                self.assertIn("charset=utf-8", response.headers.getheader("Content-Type") or "")
+                content_type = response.headers.getheader("Content-Type") or ""
+                if relative.endswith('.png'):
+                    self.assertEqual(content_type, 'image/png')
+                    self.assertTrue(response.body.startswith(b'\x89PNG\r\n\x1a\n'))
+                else:
+                    self.assertIn("charset=utf-8", content_type)
 
     def test_index_is_served_at_the_root(self) -> None:
         client = self.server.client()

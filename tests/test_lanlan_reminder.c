@@ -127,8 +127,8 @@ static void test_restart_reload_does_not_rering(void) {
 static void test_clock_jumps_across_a_date_boundary(void) {
     /* The device persists ONE rung instance per reminder, so the guarantee is
      * exactly "an instance rings at most once": repeating the same local day
-     * cannot ring twice, while any day that differs from the stored one is a new
-     * instance. These cases pin both halves of that rule. */
+     * cannot ring twice; only dates beyond the high-water mark can ring.
+     * These cases pin forward progress and rollback suppression. */
     lanlan_reminder_t reminder = make_reminder(1, "07:40", true);
     lanlan_local_now_t now = at(20370, 8, 0);
     assert(lanlan_reminder_due(&reminder, &now, true) == LANLAN_REMINDER_DUE);
@@ -162,18 +162,15 @@ static void test_clock_jumps_across_a_date_boundary(void) {
     assert(reminder.last_rung_day == 20375);
     assert(lanlan_reminder_due(&reminder, &other, true) == LANLAN_REMINDER_NOT_DUE);
 
-    /* With a single stored instance, a backwards correction onto an older day
-     * forgets that the older day already rang and may ring once for it. That is
-     * a real limitation of the one-instance persistence, not a double ring of
-     * the same instance, and the next forward correction re-establishes the
-     * stored day. */
+    /* Clock rollback keeps the high-water mark, including after a reload. */
     lanlan_local_now_t back = at(20370, 8, 0);
-    assert(lanlan_reminder_due(&reminder, &back, true) == LANLAN_REMINDER_DUE);
-    assert(lanlan_reminder_mark_rung(&reminder, &back));
     assert(lanlan_reminder_due(&reminder, &back, true) == LANLAN_REMINDER_NOT_DUE);
-    /* The day stored after the correction is the corrected one, not the old. */
-    assert(reminder.last_rung_day == 20370);
-    assert(lanlan_reminder_due(&reminder, &other, true) == LANLAN_REMINDER_DUE);
+    assert(!lanlan_reminder_mark_rung(&reminder, &back));
+    assert(reminder.last_rung_day == 20375);
+    assert(lanlan_reminder_due(&reminder, &other, true) == LANLAN_REMINDER_NOT_DUE);
+    lanlan_local_now_t next = at(20376, 8, 0);
+    assert(lanlan_reminder_due(&reminder, &next, true) == LANLAN_REMINDER_DUE);
+
 }
 
 static void test_time_change_on_the_same_day(void) {

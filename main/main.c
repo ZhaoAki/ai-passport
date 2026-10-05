@@ -1,3 +1,5 @@
+#include "esp_random.h"
+#include "lanlan_reaction.h"
 /* Cyber Lanlan Passport application entry.
  *
  * The application is a networked pet-care recorder: it renders the service's
@@ -708,18 +710,24 @@ static void config_sync_from_model(void) {
 
 /* ------------------------------------------------------------- actions -- */
 
+static lanlan_reaction_bag_t s_reactions;
+
 static void handle_action(lanlan_action_t action) {
     switch (action) {
-    case LANLAN_ACTION_COMPANION_PET:
+    case LANLAN_ACTION_COMPANION_PET: {
         /* A pet action changes mood and plays a short clip; it must never
          * produce a record action. */
         (void)lanlan_ui_pet_invariant_held(s_model);
-        play_clip(LANLAN_SFX_CHIRP);
+        lanlan_reaction_t reaction = lanlan_reaction_next(&s_reactions, esp_random());
+        const unsigned sounds[] = {LANLAN_SFX_CHIRP, LANLAN_SFX_BARK_SOFT,
+                                   LANLAN_SFX_CHIRP, LANLAN_SFX_BARK};
+        play_clip(sounds[reaction]);
         if (s_display_ok && bsp_lvgl_lock(1000)) {
-            lanlan_ui_companion_react(LANLAN_CHARACTER_HAPPY);
+            lanlan_ui_companion_pet(reaction);
             bsp_lvgl_unlock();
         }
         break;
+    }
     case LANLAN_ACTION_SETTINGS_REFRESH:
     case LANLAN_ACTION_STATUS_RETRY:
         lanlan_sync_request_now();
@@ -733,8 +741,22 @@ static void handle_action(lanlan_action_t action) {
     }
 }
 
+static bool s_pet_press_consumed;
+static bool s_pet_press_woke;
+
 static void handle_input(const input_event_t *event, bool display_was_off) {
     if (!s_ready) return;
+    /* React on each physical OK press on this page, rather than waiting for
+     * the single/double-click classifier. Its later click must not react twice. */
+    if (event->event == BSP_BTN_PRESS) {
+        if (event->key != BSP_BTN_OK) return;
+        s_pet_press_consumed = s_model->page == LANLAN_PAGE_COMPANION;
+        s_pet_press_woke = display_was_off;
+        if (!s_pet_press_consumed) return;
+    } else if (event->key == BSP_BTN_OK && s_pet_press_consumed) {
+        if (event->event == BSP_BTN_CLICK || event->event == BSP_BTN_DOUBLE ||
+            (event->event == BSP_BTN_LONG && s_pet_press_woke)) return;
+    }
     s_last_input_us = now_us();
     /* The display comes back on the first gesture, dimmed or off. What that
      * gesture then means is the model's decision: the model owns the wake-only
@@ -747,19 +769,6 @@ static void handle_input(const input_event_t *event, bool display_was_off) {
     s_dimmed = false;
     s_dark = false;
 
-    if (event->event == BSP_BTN_DOUBLE && event->key == BSP_BTN_OK) {
-        /* The documented companion controls are UP/DOWN and an OK click. A
-         * double click is an extra: the bark frame plus its short clip. It is
-         * still a pet interaction and never creates a record. */
-        if (s_model->page != LANLAN_PAGE_COMPANION) return;
-        (void)lanlan_ui_pet_invariant_held(s_model);
-        play_clip(LANLAN_SFX_BARK);
-        if (s_display_ok && bsp_lvgl_lock(1000)) {
-            lanlan_ui_companion_bark();
-            bsp_lvgl_unlock();
-        }
-        return;
-    }
     lanlan_key_t key;
     switch (event->key) {
     case BSP_BTN_UP: key = LANLAN_KEY_UP; break;
@@ -767,7 +776,8 @@ static void handle_input(const input_event_t *event, bool display_was_off) {
     case BSP_BTN_OK:
     default: key = event->event == BSP_BTN_LONG ? LANLAN_KEY_OK_LONG : LANLAN_KEY_OK_CLICK; break;
     }
-    if (event->event != BSP_BTN_CLICK && event->event != BSP_BTN_LONG) return;
+    if (event->event != BSP_BTN_CLICK && event->event != BSP_BTN_LONG &&
+        event->event != BSP_BTN_PRESS) return;
     /* A long press on UP/DOWN is not assigned by the design. */
     if (event->event == BSP_BTN_LONG && event->key != BSP_BTN_OK) return;
 
@@ -823,12 +833,17 @@ static void reminder_poll(void) {
         s_render_dirty = true;
     }
     if (rung) {
-        play_clip(LANLAN_SFX_REMINDER);
+        esp_err_t saved = ESP_ERR_INVALID_STATE;
         if (s_nvs_open) {
             xSemaphoreTake(s_nvs_mutex, portMAX_DELAY);
-            (void)store_rungs_locked();
-            (void)nvs_commit(s_nvs);
+            saved = store_rungs_locked();
+            if (saved == ESP_OK) saved = nvs_commit(s_nvs);
             xSemaphoreGive(s_nvs_mutex);
+        }
+        if (saved == ESP_OK) {
+            play_clip(LANLAN_SFX_REMINDER);
+        } else {
+            ESP_LOGW(TAG, "reminder suppressed: rung state could not be persisted");
         }
         s_banner_until_us = now + LANLAN_BANNER_US;
         s_render_dirty = true;
@@ -871,7 +886,8 @@ static void backlight_poll(void) {
 static void on_key(bsp_btn_t key, bsp_btn_ev_t event, void *user) {
     (void)user;
     if (!s_ready) return;
-    if (event != BSP_BTN_CLICK && event != BSP_BTN_LONG && event != BSP_BTN_DOUBLE) return;
+    if (event != BSP_BTN_PRESS && event != BSP_BTN_CLICK &&
+        event != BSP_BTN_LONG && event != BSP_BTN_DOUBLE) return;
     const input_event_t input = {key, event};
     /* The callback runs in the shared button timer task: enqueue only. */
     (void)xQueueSend(s_queue, &input, 0);

@@ -356,3 +356,6 @@ ul.list li a.entry {
   body { font-size: 16px; }
   .counts { grid-template-columns: repeat(6, 1fr); }
 }
+
+/* The same Lanlan identity used on the Passport. */
+.lanlan-avatar { display: block; width: 128px; height: 128px; object-fit: contain; margin: 0 auto 12px; }

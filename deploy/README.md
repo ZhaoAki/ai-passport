@@ -36,15 +36,15 @@ step and no lock file.
 3. Build and start:
 
    ```bash
-   docker compose up -d --build
-   docker compose logs -f caddy
+   docker compose --env-file lanlan.env up -d --build
+   docker compose --env-file lanlan.env logs -f caddy
    ```
 
 4. Create the family, the two caregivers and the seven disabled reminders. The
    initialization command prints the generated passwords exactly once:
 
    ```bash
-   docker compose exec lanlan python3 -m lanlan init
+   docker compose --env-file lanlan.env exec lanlan python3 -m lanlan init
    ```
 
    Add `--password hehe=...` style options to choose the passwords yourself.
@@ -53,7 +53,7 @@ step and no lock file.
 5. Generate a device credential for the passport and keep the printed token:
 
    ```bash
-   docker compose exec lanlan python3 -m lanlan device-create --label passport-a
+   docker compose --env-file lanlan.env exec lanlan python3 -m lanlan device-create --label passport-a
    ```
 
 6. Open `https://<LANLAN_DOMAIN>/` in a phone browser and sign in.
@@ -65,15 +65,15 @@ command uses the SQLite online backup API, verifies the copy and writes a
 SHA-256 sidecar:
 
 ```bash
-docker compose exec lanlan python3 -m lanlan backup --out /data/backups
+docker compose --env-file lanlan.env exec lanlan python3 -m lanlan backup --out /data/backups
 ```
 
-Copy `/data/backups` off the host with `docker compose cp` (or a volume backup)
+Copy `/data/backups` off the host with `docker compose --env-file lanlan.env cp` (or a volume backup)
 so the copy does not share the disk with the original. Restore refuses to
 overwrite a non-empty database unless `--force` is passed:
 
 ```bash
-docker compose exec lanlan python3 -m lanlan restore --from /data/backups/<file> --force
+docker compose --env-file lanlan.env exec lanlan python3 -m lanlan restore --from /data/backups/<file> --force
 ```
 
 ## HTTPS requirements

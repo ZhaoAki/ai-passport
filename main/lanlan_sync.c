@@ -51,7 +51,7 @@ static const char *TAG = "lanlan_sync";
 
 #define LANLAN_SYNC_WIFI_ATTEMPTS 6
 #define LANLAN_SYNC_WIFI_WAIT_MS 15000
-#define LANLAN_SYNC_IDLE_INTERVAL_US (120 * 1000000LL)
+#define LANLAN_SYNC_IDLE_INTERVAL_US (30 * 1000000LL)
 #define LANLAN_SYNC_BACKOFF_BASE_SECONDS 5u
 #define LANLAN_SYNC_BACKOFF_MAX_SECONDS 600u
 #define LANLAN_SYNC_RETRY_AFTER_US (60 * 1000000LL)
@@ -112,10 +112,6 @@ static char s_post[256];
 /* Copy of the configured base URL, so the request path never takes the config
  * lock while a connection is open. */
 static char s_base_url[LANLAN_CONFIG_URL_BYTES];
-/* The snapshot's reminder array is only sent on the first page, so it is held
- * here while the newest record page is fetched. */
-static lanlan_reminder_t s_head_reminders[LANLAN_CACHE_REMINDER_CAPACITY];
-static int32_t s_head_reminder_count;
 
 /* ---------------------------------------------------------- small helpers -- */
 
@@ -796,13 +792,11 @@ static lanlan_sync_error_t sync_snapshot(void) {
     if (!batch) return LANLAN_SYNC_ERROR_INTERNAL;
     const lanlan_sync_parse_hooks_t hooks = parse_hooks();
 
-    /* First request: one record only, which still returns the reminder list,
-     * the cursor and the total, so the newest page can be fetched directly
-     * instead of paging through the whole history. The reminder array is only
-     * sent for offset 0, so it is copied out before the buffer is reused. */
+    /* One server read transaction binds the bounded recent window, reminders
+     * and cursor. No second request may move the cursor past unseen changes. */
     http_reply_t reply;
     lanlan_sync_error_t error = LANLAN_SYNC_ERROR_NONE;
-    esp_err_t err = http_run("/api/v1/sync/snapshot?offset=0&limit=1", NULL, 0, s_body,
+    esp_err_t err = http_run("/api/v1/sync/snapshot?latest=1&limit=40", NULL, 0, s_body,
                              sizeof(s_body), &reply, &error);
     if (err != ESP_OK) return error;
     if (reply.oversize) return LANLAN_SYNC_ERROR_OVERSIZE;
@@ -814,47 +808,13 @@ static lanlan_sync_error_t sync_snapshot(void) {
     }
     if (classified != LANLAN_SYNC_HTTP_OK) return LANLAN_SYNC_ERROR_HTTP_STATUS;
     if (!reply.complete) return LANLAN_SYNC_ERROR_MALFORMED;
-
     lanlan_sync_page_info_t info;
     lanlan_sync_parse_status_t status =
         lanlan_sync_parse_page(LANLAN_SYNC_PAGE_SNAPSHOT, s_body, reply.length, s_offset_minutes,
                                &hooks, batch, &info);
-    if (status != LANLAN_SYNC_PARSE_OK) {
-        ESP_LOGW(TAG, "snapshot head rejected: %s", lanlan_sync_parse_status_name(status));
+    if (status != LANLAN_SYNC_PARSE_OK || (info.has_has_more && info.has_more)) {
+        ESP_LOGW(TAG, "snapshot rejected: %s", lanlan_sync_parse_status_name(status));
         return LANLAN_SYNC_ERROR_MALFORMED;
-    }
-    s_head_reminder_count = batch->reminder_count;
-    if (s_head_reminder_count > 0) {
-        memcpy(s_head_reminders, batch->reminders,
-               (size_t)s_head_reminder_count * sizeof(s_head_reminders[0]));
-    }
-
-    size_t offset = 0;
-    if (info.has_total && info.total > (int64_t)LANLAN_CACHE_RECORD_CAPACITY) {
-        offset = (size_t)(info.total - (int64_t)LANLAN_CACHE_RECORD_CAPACITY);
-    }
-    char path[128];
-    snprintf(path, sizeof(path), "/api/v1/sync/snapshot?offset=%u&limit=%u", (unsigned)offset,
-             (unsigned)LANLAN_CACHE_RECORD_CAPACITY);
-    err = http_run(path, NULL, 0, s_body, sizeof(s_body), &reply, &error);
-    if (err != ESP_OK) return error;
-    if (reply.oversize) return LANLAN_SYNC_ERROR_OVERSIZE;
-    classified = lanlan_sync_http_classify(reply.status, NULL);
-    if (classified != LANLAN_SYNC_HTTP_OK) return LANLAN_SYNC_ERROR_HTTP_STATUS;
-    if (!reply.complete) return LANLAN_SYNC_ERROR_MALFORMED;
-
-    status = lanlan_sync_parse_page(LANLAN_SYNC_PAGE_SNAPSHOT, s_body, reply.length,
-                                    s_offset_minutes, &hooks, batch, &info);
-    if (status != LANLAN_SYNC_PARSE_OK) {
-        ESP_LOGW(TAG, "snapshot page rejected: %s", lanlan_sync_parse_status_name(status));
-        return LANLAN_SYNC_ERROR_MALFORMED;
-    }
-    if (s_head_reminder_count > 0) {
-        memcpy(batch->reminders, s_head_reminders,
-               (size_t)s_head_reminder_count * sizeof(s_head_reminders[0]));
-        batch->reminder_count = s_head_reminder_count;
-    } else {
-        batch->reminder_count = 0;
     }
     report_envelope_clock(batch);
     if (!apply_batch(LANLAN_SYNC_APPLY_REPLACE, batch)) return LANLAN_SYNC_ERROR_STORAGE;

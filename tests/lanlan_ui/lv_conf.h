@@ -14,7 +14,7 @@
 #define LV_CONF_H
 
 #define LV_USE_STDLIB_MALLOC LV_STDLIB_BUILTIN
-#define LV_MEM_SIZE (48 * 1024)
+#define LV_MEM_SIZE (32 * 1024)
 
 #define LV_USE_OS LV_OS_NONE
 #define LV_COLOR_DEPTH 16

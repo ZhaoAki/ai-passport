@@ -9,7 +9,7 @@ Running with no arguments regenerates everything from main/lanlan/strings.json:
   * main/lanlan_strings.h / main/lanlan_strings.c   fixed UI strings (LANLAN_STR_*)
   * assets/fonts/lanlan_symbols.txt                 code-point inventory
   * assets/fonts/lanlan_font_16.c, lanlan_font_24.c 2-bpp uncompressed LVGL subsets
-  * assets/images/lanlan_sprites.h/.c               96x96 RGB565 placeholder frames
+  * assets/images/lanlan_sprites.h/.c               96x96 RGB565 character frames
   * assets/music/lanlan_sfx_16k.pcm                 16 kHz signed 16-bit mono clips
   * assets/music/lanlan_sfx_manifest.json           clip offsets, sizes and SHA-256
   * main/lanlan_sfx_data.h                          PCM clip table offsets
@@ -50,11 +50,6 @@ LABEL_SOURCES = (
     ROOT / "main/lanlan_model.c",
 )
 
-PLACEHOLDER_BANNER = (
-    "THIS FILE CONTAINS PLACEHOLDER ART, NOT THE OWNER-APPROVED FINAL "
-    "APPEARANCE. IT EXISTS ONLY TO VALIDATE LAYOUT, ANIMATION TIMING AND "
-    "RENDERING UNTIL THE OWNER APPROVES A FROZEN SPRITE SET."
-)
 
 
 def identify(name):
@@ -228,95 +223,23 @@ def generate_fonts(codepoints, node, converter):
 # ----------------------------------------------------------------------- art --
 
 SPRITE_SIZE = 96
-# A small fixed palette keeps the frame data readable in the generated file and
-# makes the placeholder unmistakably a placeholder.
-SPRITE_COLORS = {
-    "background": 0xFFFF,   # white
-    "cream": 0xFEF3,        # cream body
-    "shade": 0xE6AC,        # cream shade
-    "dark": 0x39E7,         # dark eyes and nose
-    "white": 0xFFFF,        # white chest and muzzle
-    "tuft": 300,            # placeholder, replaced below
-}
-SPRITE_COLORS["tuft"] = 0xFE0F
-HEAD_CENTER = (48, 44)
-HEAD_RADII = (30, 26)
-BODY_ELLIPSE = ((48, 74), (26, 20))
-CHEST_ELLIPSE = ((48, 80), (14, 14))
-MUZZLE_ELLIPSE = ((48, 66), (13, 9))
-EAR_ELLIPSES = (((30, 52), (8, 14)), ((66, 52), (8, 14)))
-TUFT_ELLIPSES = (((40, 22), (8, 7)), ((48, 18), (9, 8)), ((56, 22), (8, 7)))
-EYE_ELLIPSES = (((39, 42), (5, 6)), ((57, 42), (5, 6)))
-BLINK_ROWS = (42, 45)
-NOSE_ROWS = (58, 61)
 
 
 def sprite_frames():
-    """Draw the idle/blink/happy/bark frames with simple primitives.
-
-    The shape is a cream puppy silhouette: a round head with a fluffy tuft,
-    drop ears, two dark eyes, a white chest and a small muzzle. It is drawn
-    from ellipses and rectangles only so the drawing stays dependency-free and
-    reviewable; the owner-approved art will replace it wholesale.
-    """
+    """Load the mechanically converted, owner-reference character frames."""
+    directory = ROOT / "assets/images/lanlan-v2"
+    manifest = json.loads((directory / "manifest.json").read_text())
+    raw = (directory / "frames.rgb565").read_bytes()
+    if hashlib.sha256(raw).hexdigest() != manifest["sha256"]:
+        raise ValueError("Sprite source checksum mismatch")
     frames = []
-
-    def blank():
-        return [[SPRITE_COLORS["background"]] * SPRITE_SIZE for _ in range(SPRITE_SIZE)]
-
-    def ellipse(canvas, cx, cy, rx, ry, color):
-        for y in range(max(0, cy - ry), min(SPRITE_SIZE, cy + ry + 1)):
-            for x in range(max(0, cx - rx), min(SPRITE_SIZE, cx + rx + 1)):
-                dx = (x - cx) / float(rx)
-                dy = (y - cy) / float(ry)
-                if dx * dx + dy * dy <= 1.0:
-                    canvas[y][x] = color
-
-    def draw(dy, blink):
-        canvas = blank()
-        # Drop ears behind the head, then the body behind the head.
-        for center, radii in EAR_ELLIPSES:
-            ellipse(canvas, center[0], center[1], radii[0], radii[1], SPRITE_COLORS["shade"])
-        ellipse(canvas, BODY_ELLIPSE[0][0], BODY_ELLIPSE[0][1], BODY_ELLIPSE[1][0],
-                BODY_ELLIPSE[1][1], SPRITE_COLORS["cream"])
-        # Head, then the white chest and muzzle in front of it.
-        ellipse(canvas, HEAD_CENTER[0], HEAD_CENTER[1], HEAD_RADII[0], HEAD_RADII[1],
-                SPRITE_COLORS["cream"])
-        ellipse(canvas, CHEST_ELLIPSE[0][0], CHEST_ELLIPSE[0][1], CHEST_ELLIPSE[1][0],
-                CHEST_ELLIPSE[1][1], SPRITE_COLORS["white"])
-        ellipse(canvas, MUZZLE_ELLIPSE[0][0], MUZZLE_ELLIPSE[0][1], MUZZLE_ELLIPSE[1][0],
-                MUZZLE_ELLIPSE[1][1], SPRITE_COLORS["white"])
-        # Fluffy head tuft.
-        for center, radii in TUFT_ELLIPSES:
-            ellipse(canvas, center[0], center[1], radii[0], radii[1], SPRITE_COLORS["tuft"])
-        # Eyes: closed rows when blinking, otherwise two dark ovals.
-        if blink:
-            for y in range(BLINK_ROWS[0], BLINK_ROWS[1]):
-                for x in range(EYE_ELLIPSES[0][0][0] - 6, EYE_ELLIPSES[1][0][0] + 7):
-                    canvas[y][x] = SPRITE_COLORS["dark"]
-        else:
-            for center, radii in EYE_ELLIPSES:
-                ellipse(canvas, center[0], center[1], radii[0], radii[1], SPRITE_COLORS["dark"])
-        # Nose.
-        for y in range(NOSE_ROWS[0], NOSE_ROWS[1]):
-            for x in range(45, 52):
-                canvas[y][x] = SPRITE_COLORS["dark"]
-        if dy:
-            shifted = [[SPRITE_COLORS["background"]] * SPRITE_SIZE for _ in range(SPRITE_SIZE)]
-            for y in range(SPRITE_SIZE):
-                source = y - dy
-                if 0 <= source < SPRITE_SIZE:
-                    shifted[y] = canvas[source]
-            canvas = shifted
-        return canvas
-
-    # idle: two breathing frames; blink: one closed-eye frame; happy and bark
-    # are single reaction frames.
-    frames.append(("lanlan_frame_idle_0", draw(0, False)))
-    frames.append(("lanlan_frame_idle_1", draw(1, False)))
-    frames.append(("lanlan_frame_blink", draw(0, True)))
-    frames.append(("lanlan_frame_happy", draw(0, False)))
-    frames.append(("lanlan_frame_bark", draw(0, False)))
+    for frame in manifest["frames"]:
+        data = raw[frame["offset"]:frame["offset"] + frame["bytes"]]
+        if len(data) != SPRITE_SIZE * SPRITE_SIZE * 2:
+            raise ValueError("Invalid sprite frame size")
+        pixels = struct.unpack(">" + "H" * (SPRITE_SIZE * SPRITE_SIZE), data)
+        canvas = [pixels[y*SPRITE_SIZE:(y+1)*SPRITE_SIZE] for y in range(SPRITE_SIZE)]
+        frames.append(("lanlan_frame_" + frame["name"], canvas))
     return frames
 
 
@@ -330,7 +253,7 @@ def rgb565(pixel):
 def generate_sprites():
     frames = sprite_frames()
     lines = [
-        "/* %s" % PLACEHOLDER_BANNER,
+        "/* Cyber Lanlan character art v2, based on the owner-provided references.",
         " *",
         " * Generated by tools/generate_lanlan_assets.py. 96x96 RGB565 frames stored",
         " * big-endian (byte 0 = high byte), which is the layout the BSP canvas uses.",
@@ -382,34 +305,51 @@ def pcm_clip(name, seconds, render):
     return name, struct.pack("<%dh" % len(samples), *samples)
 
 
+def puppy_voice(name, notes):
+    """Original stylized puppy vocalization, not a sampled animal recording.
+
+    Harmonic glottal pulses, moving vocal formants, a little breath noise and
+    short rounded syllables replace the former electronic sine chirp.
+    """
+    duration = max(start + length for start, length, pitch, gain in notes) + 0.04
+    samples = [0.0] * int(duration * SAMPLE_RATE)
+    random = 0x12345
+    for start, length, pitch, gain in notes:
+        phase = 0.0
+        for i in range(int(length * SAMPLE_RATE)):
+            t = i / SAMPLE_RATE
+            u = t / length
+            f0 = pitch * (1.22 - 0.40*u + 0.035*math.sin(2*math.pi*35*t))
+            phase += 2*math.pi*f0/SAMPLE_RATE
+            voice = 0.0
+            for harmonic in range(1, 19):
+                frequency = harmonic*f0
+                weight = (0.9*math.exp(-((frequency-850)/420)**2) +
+                          0.6*math.exp(-((frequency-1700)/600)**2) +
+                          0.25*math.exp(-((frequency-2800)/750)**2)) / math.sqrt(harmonic)
+                voice += weight*math.sin(harmonic*phase)
+            random = (1664525*random + 1013904223) & 0xffffffff
+            noise = (random / 0xffffffff)*2-1
+            envelope = (1-math.exp(-t/0.009))*math.exp(-t/(length*0.42))
+            envelope *= min(1.0, (length-t)/0.025)
+            value = math.tanh(voice*1.8 + noise*0.20)*envelope*gain
+            samples[int(start*SAMPLE_RATE)+i] += value
+    peak = max(abs(x) for x in samples) or 1
+    data = [int(x/peak*16000) for x in samples]
+    return name, struct.pack('<%dh' % len(data), *data)
+
+
 def clip_bark():
-    """Short bark: a fast downward sweep with an exponential decay envelope."""
-
-    def render(time, index, count):
-        envelope = math.exp(-9.0 * time) * (1.0 - math.exp(-90.0 * time))
-        frequency = 620.0 - 240.0 * (time / 0.34)
-        tone = math.sin(2.0 * math.pi * frequency * time)
-        # Self-produced noise shaped by the same envelope: no sampled material.
-        noise = math.sin(2.0 * math.pi * 1733.0 * time) * math.sin(2.0 * math.pi * 2311.0 * time)
-        return 0.85 * envelope * tone + 0.25 * envelope * noise
-
-    return pcm_clip("bark", 0.34, render)
+    return puppy_voice('bark', [(0, 0.24, 350, 1.0)])
 
 
 def clip_chirp():
-    """Happy chirp: two rising sine notes with a soft cosine envelope."""
+    # Keep the historical symbol for pack compatibility; it is now two arfs.
+    return puppy_voice('chirp', [(0, 0.17, 440, 0.8), (0.23, 0.20, 390, 1.0)])
 
-    def render(time, index, count):
-        if time < 0.12:
-            frequency = 780.0 + 900.0 * (time / 0.12)
-            envelope = math.sin(math.pi * min(1.0, time / 0.12))
-        else:
-            local = (time - 0.12) / 0.14
-            frequency = 1180.0 + 700.0 * local
-            envelope = math.sin(math.pi * min(1.0, local))
-        return 0.6 * envelope * math.sin(2.0 * math.pi * frequency * time)
 
-    return pcm_clip("chirp", 0.26, render)
+def clip_bark_soft():
+    return puppy_voice('bark_soft', [(0, 0.26, 460, 0.65)])
 
 
 def clip_reminder():
@@ -427,7 +367,7 @@ def clip_reminder():
 
 
 def generate_audio():
-    clips = [clip_bark(), clip_chirp(), clip_reminder()]
+    clips = [clip_bark(), clip_chirp(), clip_reminder(), clip_bark_soft()]
     packed = bytearray()
     manifest_clips = []
     offsets = []
@@ -444,7 +384,7 @@ def generate_audio():
     pcm_path.write_bytes(bytes(packed))
     manifest = {
         "format": "PCM s16le mono 16000 Hz",
-        "license": "self-produced tones and synthetic noise, no third-party audio",
+        "license": "original synthesized puppy vocalizations and reminder tone; no third-party recording",
         "sha256": hashlib.sha256(bytes(packed)).hexdigest(),
         "clips": manifest_clips,
     }

@@ -2,19 +2,11 @@
 #include "lanlan_reminder.h"
 
 #include <string.h>
-/* The instance identity is the local day only, stored as the day index so the
- * comparison is integer-exact across month, year and offset boundaries. The
- * device persists exactly ONE instance per reminder, which gives this rule:
- *   - evaluating the stored day again (a refresh, a repeated poll, a restart)
- *     never rings a second time;
- *   - any other day is a new instance and may ring once, which replaces the
- *     stored day.
- * A backwards clock correction therefore cannot re-ring the day it restores if
- * that day is still the stored one, but an older day the device has since
- * forgotten can ring once again. Bounding every instance to a single ring is
- * what the design promises; keeping a full rung history is not. */
+/* Persist a local-day high-water mark. After a backwards clock correction,
+ * suppress sound until the date advances beyond the last day that rang. */
 static bool instance_already_rung(const lanlan_reminder_t *reminder, int64_t local_day) {
-    return reminder->last_rung_day == local_day;
+    return reminder->last_rung_day != LANLAN_REMINDER_NO_RUNG &&
+           local_day <= reminder->last_rung_day;
 }
 
 lanlan_reminder_due_t lanlan_reminder_due(const lanlan_reminder_t *reminder,

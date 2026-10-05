@@ -1,0 +1,47 @@
+{
+  "source": "atlas.png",
+  "source_sha256": "a898e16537ecb34174410c33b037b03a1476b3d3a4bea4d2a35faf4d5b656db9",
+  "source_kind": "built-in imagegen; prior Lanlan design identity and owner-provided GIF motion references",
+  "format": "RGB565 big-endian",
+  "width": 96,
+  "height": 96,
+  "sha256": "40a4b2c5ef601a8967bcd9139d7ec22ce2947c17e0bdf44d482cd91e360cd4cb",
+  "frames": [
+    {
+      "name": "idle_0",
+      "offset": 0,
+      "bytes": 18432,
+      "sha256": "4db5f7e91084f57ed4f9367ceaec71f2e92dd3cad0e0cfe331e2c9312a6f0c21"
+    },
+    {
+      "name": "idle_1",
+      "offset": 18432,
+      "bytes": 18432,
+      "sha256": "7c0a0c252b491a25c887c4a4fe639483e272508c98b88516c2267a85d18d714b"
+    },
+    {
+      "name": "blink",
+      "offset": 36864,
+      "bytes": 18432,
+      "sha256": "49012cf248fdccda620f75d82702eef48d37c6a909a790b19317067a421a2806"
+    },
+    {
+      "name": "tilt",
+      "offset": 55296,
+      "bytes": 18432,
+      "sha256": "de685f9bf2829c39cf2c863b2ee4c479edd86c709b4f33cfcb44fe41ea933980"
+    },
+    {
+      "name": "happy",
+      "offset": 73728,
+      "bytes": 18432,
+      "sha256": "2177a294ddf8df57740afcca56d51a551a319bf8bfcd892a548490580e83bfc5"
+    },
+    {
+      "name": "bark",
+      "offset": 92160,
+      "bytes": 18432,
+      "sha256": "4bb1d2e09b6b0f7068cb7843a9fe7be5df011c93ea21501248e2d8061ae368d2"
+    }
+  ]
+}

@@ -1,178 +1,116 @@
 <p align="right"><a href="cyber-lanlan-delivery.zh_CN.md">简体中文</a> · <strong>English</strong></p>
 
-# Cyber Lanlan First-Generation Delivery
+# Cyber Lanlan initial device-test release
 
-This document is the handover record for the first generation of the Cyber Lanlan
-pet-care recorder: what was delivered, how to run it, what was verified, and what is
-still open. The frozen design is in [cyber-lanlan.md](cyber-lanlan.md) and
-[cyber-lanlan-service.md](cyber-lanlan-service.md); the acceptance mapping is in
-[cyber-lanlan-testing.md](cyber-lanlan-testing.md).
+> This page records v0.1. For the current visual update, see [character v0.2](cyber-lanlan-character.md).
 
-## 1. Delivered state
+This 2026-10-05 repair release supersedes the previous DeepSeek handoff. It is
+based on `989f746e6ff03fd660839b94e7e81a8d99db18a4` with local, uncommitted fixes.
+No board has been flashed or accepted. The source, service and firmware must be
+used together. Xiaomi integration remains deferred and reminders start disabled.
 
-| Item | Value |
+## Repairs and scope
+
+- Browser-local dates round-trip through UTC; an unknown amount no longer inherits
+  a previously edited record's quantity.
+- A lost-response retry with changed content produces an explicit conflict, keeps
+  the entered fields and lets the caregiver save a revision of the existing record.
+- Snapshot recovery reads the recent window, reminders and cursor together. The
+  window holds up to 40 records with bounded note previews and a 15 KB response
+  budget; full records remain on the server. See the [protocol](cyber-lanlan-service.md).
+- Healthy idle sync runs every 30 seconds. Failure backoff remains enabled.
+- Reminder dates use a persisted high-water mark. Clock rollback cannot re-arm an
+  older date; sound is played only after persistence succeeds. A clock mistakenly
+  advanced far into the future suppresses reminders until that date is passed.
+- Firmware and UI stress tests both use a 32 KB LVGL pool. This adds 8 KB to the
+  prior firmware pool, while replacing the test's previous 48 KB assumption.
+
+Phone recording, separate Hehe/Yangyang accounts, cached device reading, companion
+interaction, sound and mute are included. Character sprites are still placeholder
+art, pending owner approval. No cloud host has been deployed.
+
+## Validation and exact firmware
+
+| Check | Result |
 | --- | --- |
-| Repository | https://github.com/ZhaoAki/ai-passport |
-| Branch | `feature/cyber-lanlan` |
-| Baseline | `99058004449a76c313375e238436b4642e36886c` (`feature/korean-learning`) |
-| Preserved branch | `feature/korean-learning` is untouched; this branch retires the Korean application from its own tree only |
-| Firmware | merged image `build/FoloToy-AI-Passport-full.bin`, 1831840 bytes, SHA-256 `5d5b392f5cb6374f939d2dcc6b880a06f81e4432044e9a971c1673cf7482fe01`; application image 1766304 bytes inside the 8323072-byte factory partition, with its matching ELF, MAP, bootloader, partition table and `flash_args` retained in the content-addressed bundle `build/firmware/5d5b392f5cb6374f939d2dcc6b880a06f81e4432044e9a971c1673cf7482fe01/` |
-| Service | `services/lanlan/`, CPython standard library only, SQLite storage |
-| Mobile web | `web/lanlan/`, no build step, no third-party assets |
-| Deployment | `deploy/` (`docker-compose.yml`, `Caddyfile`, environment example) |
+| Build | PASS: ESP-IDF 5.5.3, isolated tracked defaults, merged layout and matching debug archive verified |
+| Host tests | PARTIAL: firmware logic, assets, JavaScript time/form/retry regressions and socket-free SQLite/API regressions pass; the complete gate is blocked by denied local HTTP socket binding |
+| Device tests | NOT RUN |
+| Unverified | Real Wi-Fi/TLS peak memory, screen, keys, audio, NVS persistence, battery and phone-to-device timing; real HTTP suite and production deployment |
 
-Verified at delivery: `./tools/validate.sh` passes completely (repository checks, 169 service tests, the firmware host tests, the ESP-IDF build, the merged-image layout check and the debug archive) and `python3 tools/archive_firmware.py verify build/firmware/b599f0e6ff6a5f9c…` confirms the bundle. The code commit is `de1d658`; this handover record is committed on top of it, so the branch head is the commit that adds this file.
-
-Stage coverage: M0 design documents, M1 service and mobile web, M2 passport sync with a
-bounded cache, M3 companion interaction, sounds and owner-configured reminders (all
-disabled by default), M4 build, artifacts and this handover. A later hardening round moved
-the device-side sync parsing into allocation-free code with its own host tests, added the
-A12 page-switch and key-event stress run, and made the key hints and the display timeouts
-owner-visible.
-
-## 2. What the first generation does
-
-- Two caregivers record feeding, water, care (bath, grooming, teeth, combing), cleaning,
-  walking and other items from a mobile web page, with an explicit occurrence time, a
-  performer that can be the other caregiver, an optional amount with a unit, an optional
-  walk duration and an optional note. An unset amount stays unknown and is never stored or
-  displayed as zero.
-- The service is the authority: append-only revisions with a creator, a performer, a
-  version, a revocation tombstone, idempotent submission, visible edit conflicts, CSV and
-  JSON export, online backup and restore.
-- The passport keeps a bounded recent cache (40 records, 32 tombstones, 16 reminders in one
-  CRC32-protected blob), syncs incrementally with a single global cursor, shows the sync
-  state, the battery, the last successful sync time and the data age, works offline from the
-  cache, and offers a second, redesigned UI with a pixel companion, short sounds, a global
-  mute, a reminder list, Chinese key hints, and dim and screen-off durations that the owner
-  can change in Settings. The first gesture after the screen turns off only wakes the
-  display. The device-side sync response parsing is covered by host tests and no longer
-  depends on a third-party JSON library.
-- Reminders start disabled with no interval preset; the owner enables a daily time in the
-  web page. An instance can ring at most once, and dismissing a prompt is not completion.
-- The passport cannot create, edit or revoke records, and virtual interaction never
-  produces a care record.
-
-Out of scope and not built: MI Home or appliance integration, camera notifications or
-video, remote feeding, phone lock-screen push, Korean learning content, AI chat, and any
-hunger, death or absence penalty.
-
-## 3. How to run it
-
-### 3.1 Service and mobile web (development)
+The full gate was attempted. HTTP tests fail during server setup with
+`PermissionError: [Errno 1] Operation not permitted`; this is not a passing gate.
+Run it in a normal terminal with ESP-IDF 5.5.3 and Node.js available:
 
 ```bash
-cd services
-python3 -m lanlan init --password hehe=<password> --password yangyang=<password>   # creates the family and 7 disabled reminders
-python3 -m lanlan serve --host 127.0.0.1 --port 8787
+./tools/validate.sh
+python3 tools/preview_lanlan.py --mode stress
 ```
 
-Open `http://127.0.0.1:8787/` on the phone (same network) and sign in as `hehe` or
-`yangyang`. Configuration is environment-based: `LANLAN_DB`, `LANLAN_HOST`, `LANLAN_PORT`,
-`LANLAN_ENV`, `LANLAN_SECURE_COOKIES`, `LANLAN_TIMEZONE`, `LANLAN_PBKDF2_ITERATIONS`,
-`LANLAN_SESSION_DAYS`. Details are in [services/lanlan/README.md](../../services/lanlan/README.md).
+Host UI stress passed 1,103 page switches, 2,160 keys and 2,880 renders. Free LVGL
+memory returned to 13,432 bytes; minimum observed free memory was 10,328 bytes.
+This host measurement does not establish ESP32 Wi-Fi/TLS heap headroom.
 
-> The development server is not an always-on deployment: the phone can only reach it while
-> the machine running it is on. A hosted deployment needs the budget decision that is still
-> open.
+- Merged image: 1,831,568 bytes, flash at `0x0`.
+- Full SHA-256: `2fc9a71d82f6ca43961d0627d70d66a4c4d09ec3f643c0a5632100ad3b4df90e`.
+- Matching ELF SHA-256: `14a07985330bf04deb99fdbd36e4264fb44b93619d2ecc1bf388055c3b874fdf`.
+- Embedded version: `989f746-dirty`; use the hashes to identify this build.
+- Debug archive: `build/firmware/2fc9a71d82f6ca43961d0627d70d66a4c4d09ec3f643c0a5632100ad3b4df90e/`.
 
-### 3.2 Deployment
+Merged flashing can reset NVS settings and cached data. It replaces the installed
+application. Do not use an application-only image at `0x0` or perform a routine
+full-chip erase. Flashing needs separate owner authorization.
+
+## Local phone and device testing
+
+Use a temporary computer-hosted server for the test session. The phone, computer
+and Passport must share a reachable network; the Passport needs 2.4 GHz Wi-Fi.
+Run from the repository root with Python 3.9 or newer:
 
 ```bash
-cp deploy/lanlan.env.example deploy/lanlan.env     # set the public domain
-docker compose -f deploy/docker-compose.yml up -d  # service + Caddy with automatic HTTPS
+export PYTHONPATH="$PWD/services"
+export LANLAN_DB="$PWD/.local-data/lanlan.sqlite3"
+mkdir -p .local-data
+python3 -m lanlan init
+python3 -m lanlan serve --host 0.0.0.0 --port 8787
 ```
 
-See [deploy/README.md](../../deploy/README.md). HTTPS is required in production; the
-service refuses a production configuration without an explicit database path and secure
-cookies.
+Initialize only a new database. Save the generated caregiver passwords shown once
+by `init`. Open `http://<computer-LAN-IP>:8787/` on the phone. `127.0.0.1` on the
+phone points to the phone itself. Allow local-network access if the OS firewall
+asks. Local HTTP is for a trusted test network only. The terminal must stay open;
+when the computer stops serving, the device keeps its cache but receives no updates.
+For daily independent use, deploy the service to an always-available host later.
 
-### 3.3 Passport firmware
-
-```bash
-source <path-to-esp-idf-5.5.3>/export.sh
-./tools/validate.sh --firmware          # builds and verifies the merged 0x0 image
-idf.py -p <port> flash monitor          # optional incremental development flashing
-```
-
-Without hardware, the merged image is the deliverable. Flashing is a separate action that
-needs explicit approval; on a blank device flash `build/FoloToy-AI-Passport-full.bin` at
-offset `0x0`.
-
-### 3.4 First-time passport setup
-
-The device ships without Wi-Fi credentials and without a device credential. Create the
-credential in the web page (Account and export, "device credential") and paste these into
-the passport over its USB serial console (the same port as the logs):
+Create a device token on the web account page, then enter these commands in the
+Passport USB serial console at 115200 baud, substituting real values without
+angle brackets. Do not put credentials into screenshots or Git:
 
 ```text
-lanlan cfg ssid <wifi name>
-lanlan cfg pass <wifi password>
-lanlan cfg url <https://host>
-lanlan cfg token <device token>
+lanlan cfg ssid <Wi-Fi-name>
+lanlan cfg pass <Wi-Fi-password>
+lanlan cfg url http://<computer-LAN-IP>:8787
+lanlan cfg token <device-token>
 lanlan cfg tz +08:00
 lanlan cfg show
 lanlan sync now
 ```
 
-`url` must be `http(s)://` with no trailing slash; plain `http://` is accepted for a LAN
-development service and is marked as insecure on the status page. `cfg show` never prints
-the password or the token in full. The owner-facing control map is in
-[cyber-lanlan.md](cyber-lanlan.md#1-pages-and-controls).
+Use Up/Down to select, OK to enter, and long OK to return. The first gesture after
+screen-off only wakes the display. Check a phone-created record on the Passport,
+edit its note/time, switch caregiver, test an unknown quantity, disconnect/reconnect
+Wi-Fi, restart, then test companion sound and mute. Leave care reminders disabled
+unless deliberately testing a schedule.
 
-## 4. How to verify
+## Optional later hosting
+
+Configure a real domain and an always-on host before running:
 
 ```bash
-./tools/validate.sh --static     # repository checks, firmware host tests, the service test suite
-./tools/validate.sh --firmware   # ESP-IDF build, merged image, layout check, debug archive
-./tools/validate.sh              # complete gate
-python3 tools/preview_lanlan.py               # render every screen at 240x320 with host LVGL plus a glyph audit
-python3 tools/preview_lanlan.py --mode stress  # page-switch and key-event stress with heap and object checks
-python3 tools/archive_firmware.py verify build/firmware/<sha256>
+cp deploy/lanlan.env.example deploy/lanlan.env
+# Edit the domain, then:
+docker compose --env-file deploy/lanlan.env -f deploy/docker-compose.yml up -d --build
 ```
 
-The service suite and the firmware host tests are registered in `tools/validate.sh`, so the
-same checks run locally and in CI.
-
-## 5. Verification results for this delivery
-
-```text
-Build:        PASS
-Host tests:   PASS
-Device tests: NOT RUN
-Unverified:   on-glass rendering, Wi-Fi association and TLS behaviour, real key feel and
-              backlight timing, audio playback, reminder ringing across a real day boundary,
-              the 60-second save-to-passport goal, the measured RAM peak with Wi-Fi and TLS
-              active, cache rebuild on a real NVS partition, battery behaviour, and the
-              owner's decision on the final character art
-```
-
-Exact commands, test counts, image sizes and hashes are recorded in the commit messages and
-in the sections above; the acceptance-by-acceptance view is in
-[cyber-lanlan-testing.md](cyber-lanlan-testing.md).
-
-## 6. Known limitations and deviations
-
-| Item | State |
-| --- | --- |
-| Character art | The sprite set is placeholder art, marked as such in the generated source and in [assets/README.md](../../assets/README.md). The pixel grain and the final appearance still need the owner's approval before they are frozen. |
-| Note preview | The passport keeps a 48-byte UTF-8 preview of a note and renders an explicit truncation marker; the full note stays on the service and the phone. |
-| Caregiver labels | The passport learns the names from the service's sync payload; if a name cannot be resolved it shows the neutral fallback label from the string table instead of a raw id or a slot number. |
-| Key hints | The bottom hint line is the generated Chinese hint string (up/down select, OK confirm, long press back); there is no per-key hint table. |
-| Display timeouts | Dimming and screen-off are configurable in Settings within fixed steps (dim 15/30/60/120 s; screen-off 60/90/180/300 s) and persisted in `cfg_v1`; screen-off is always kept strictly greater than dim. |
-| Reminder schedule | Daily repeat at one local time is the only supported schedule in this generation. |
-| Photos | The original family photographs are neither uploaded nor committed; the profile page has text fields only. |
-| Hosting | Local service plus a ready container configuration; no paid resource was created and no hosting decision was made. |
-| Kernel of truth on latency | The "saved on the phone, visible on the passport within 60 seconds" goal is a measurement target, not a guarantee. |
-
-## 7. Open decisions for the owner
-
-1. Hosting: whether to run the service on a small VPS or container host, and the domain name.
-2. Character art: approve or replace the placeholder sprite set, then freeze the assets and
-   regenerate the fonts/sounds if the palette changes.
-3. Device testing: connect the passport over USB so the device checklist can be executed and
-   `Device tests` can move from `NOT RUN` to a real result.
-4. Reminder policy: which items to enable, at which local times, and whether reminder sound
-   should be on.
-5. Whether the upstream repository should receive a pull request from this branch, or the
-   fork stays the delivery target.
+Follow [deployment instructions](../../deploy/README.md) for database initialization,
+backup and HTTPS. No paid resource or external publication was created by this repair.

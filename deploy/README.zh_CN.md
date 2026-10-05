@@ -33,14 +33,14 @@ Python 标准库，因此镜像没有依赖安装步骤，也不需要锁文件�
 3. 构建并启动：
 
    ```bash
-   docker compose up -d --build
-   docker compose logs -f caddy
+   docker compose --env-file lanlan.env up -d --build
+   docker compose --env-file lanlan.env logs -f caddy
    ```
 
 4. 创建家庭、两位看护人和七条默认关闭的提醒。初始化命令只会打印一次生成的密码：
 
    ```bash
-   docker compose exec lanlan python3 -m lanlan init
+   docker compose --env-file lanlan.env exec lanlan python3 -m lanlan init
    ```
 
    也可以用 `--password hehe=...` 这样的参数自行指定密码。请立刻记入密码管理器，服务端
@@ -49,7 +49,7 @@ Python 标准库，因此镜像没有依赖安装步骤，也不需要锁文件�
 5. 为设备生成凭据，并保存打印出的令牌：
 
    ```bash
-   docker compose exec lanlan python3 -m lanlan device-create --label passport-a
+   docker compose --env-file lanlan.env exec lanlan python3 -m lanlan device-create --label passport-a
    ```
 
 6. 用手机浏览器打开 `https://<LANLAN_DOMAIN>/` 登录。
@@ -60,14 +60,14 @@ Python 标准库，因此镜像没有依赖安装步骤，也不需要锁文件�
 副本并写入 SHA-256 校验文件：
 
 ```bash
-docker compose exec lanlan python3 -m lanlan backup --out /data/backups
+docker compose --env-file lanlan.env exec lanlan python3 -m lanlan backup --out /data/backups
 ```
 
-请用 `docker compose cp`（或卷备份）把 `/data/backups` 复制到主机之外，避免副本与原文件
+请用 `docker compose --env-file lanlan.env cp`（或卷备份）把 `/data/backups` 复制到主机之外，避免副本与原文件
 共用同一块磁盘。恢复默认拒绝覆盖非空数据库，必须显式加 `--force`：
 
 ```bash
-docker compose exec lanlan python3 -m lanlan restore --from /data/backups/<文件> --force
+docker compose --env-file lanlan.env exec lanlan python3 -m lanlan restore --from /data/backups/<文件> --force
 ```
 
 ## HTTPS 要求

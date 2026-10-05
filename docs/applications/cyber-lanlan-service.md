@@ -268,15 +268,24 @@ Authorization: Bearer <device token>
   instances, and refreshes it on every sync; the service therefore recomputes it instead of
   caching a fixed value.
 - If `cursor` is greater than the newest `seq` (restored backup, replaced database), the
-  service returns `409 cursor_invalid`; the device then pages through `/sync/snapshot`.
+  service returns `409 cursor_invalid`; the device then requests the bounded latest snapshot below.
 - Retention is permanent in the first generation, so a cursor cannot expire from pruning.
   The expired-cursor path exists for recovery, not for routine operation.
 
 ### 6.2 Full resynchronization
 
-`GET /api/v1/sync/snapshot?offset=<n>&limit=<n>` returns current-state records and reminders
-in stable `(occurred_at, id)` order with `has_more`, and returns a cursor at the end. The
-device replaces the cache only after the final page is stored.
+`GET /api/v1/sync/snapshot?latest=1&limit=40` returns the newest bounded window,
+all reminders, member labels and one cursor from the same database transaction.
+The device replaces its cache only after storing this entire response. Notes are
+UTF-8 previews with enough extra bytes to preserve the device's truncation marker;
+full notes and history remain available on the phone. The response is capped at
+15 KB by removing oldest window entries when needed, so the 16 KB device buffer
+has headroom. `window_count` reports the actual count, at most 40. `has_more` is
+false because this is a completed recent window, not a full-history export.
+
+The legacy `offset` mode remains available for compatibility. Its pages are
+independent read views and must not be combined into a device snapshot while
+writes are occurring. Use the new service and firmware together.
 
 ### 6.3 Device-side rules
 
@@ -366,3 +375,13 @@ keeps the save button reachable, and shows the unsaved state when a submission f
 | Character appearance | Placeholder pixel art, explicitly marked as not final art, until the owner approves the frozen sprite set |
 | 60-second sync goal | Measurement target for hardware verification |
 | Phone lock-screen push | Deferred by the task statement |
+
+## Initial device-test release corrections
+
+A repeated create request with the same key and the same normalized content replays
+its record. Different content returns `409 idempotency_conflict` with the saved
+record. The phone preserves edited fields and requires an explicit save as a
+revision of that record. It never silently rotates the key to create a duplicate.
+Datetime inputs use the browser's local timezone and are converted to UTC on save.
+The firmware's healthy idle sync interval is 30 seconds; network failures still
+back off. The 60-second visibility target needs measurement on the real device.

@@ -73,3 +73,6 @@ bool lanlan_ui_companion_visible(void);
 /* Single explicit invariant check for the "a pet action never creates a record"
  * rule; logs and returns false when the model reports a pending record action. */
 bool lanlan_ui_pet_invariant_held(const lanlan_model_t *model);
+
+#include "lanlan_reaction.h"
+void lanlan_ui_companion_pet(lanlan_reaction_t reaction);

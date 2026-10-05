@@ -795,6 +795,22 @@ class Api:
             if existing_id is not None:
                 row = current_revision(connection, identity.family_id, existing_id)
                 if row is not None:
+                    original = connection.execute(
+                        "SELECT * FROM records WHERE family_id=? AND id=? AND version=1",
+                        (identity.family_id, existing_id),
+                    ).fetchone()
+                    candidate = dict(payload)
+                    # An omitted time is assigned on the first request; a retry
+                    # must compare against that original assignment.
+                    if not candidate.get("occurred_at"):
+                        candidate["occurred_at"] = original["occurred_at"]
+                    fields = self._prepare_record_payload(connection, identity, candidate, family["timezone"])
+                    if original["created_by"] != identity.user_id or any(
+                        original[key] != value for key, value in fields.items()
+                    ):
+                        return ok({"error": {"code": "idempotency_conflict",
+                                             "message": "This request id already saved different content."},
+                                   "record": model.row_to_record(row)}, status=409)
                     return ok(
                         {"record": model.row_to_record(row), "idempotent_replay": True},
                         status=200,
@@ -1361,30 +1377,45 @@ class Api:
                 (identity.family_id, model.STATUS_ACTIVE),
             )
         )
+        latest = request.query_one("latest") == "1"
+        if latest:
+            limit = min(limit, 40)
+            offset = max(0, len(rows) - limit)
         page = rows[offset : offset + limit]
-        has_more = offset + limit < len(rows)
         zone = model.load_timezone(family["timezone"])
         now = model.now_utc()
-        return ok(
-            {
-                "server_time": model.format_utc(now),
-                "timezone": family["timezone"],
-                "utc_offset_minutes": model.offset_minutes(zone, now),
-                "offset": offset,
-                "limit": limit,
-                "total": len(rows),
-                "has_more": has_more,
-                "records": [model.record_to_compact(row) for row in page],
-                "reminders": (
-                    [model.reminder_to_compact(row) for row in current_reminders(connection, identity.family_id)]
-                    if offset == 0
-                    else []
-                ),
-                # Identical on every page, so one read is enough to label ids.
-                "members": sync_members(connection, identity.family_id),
-                "cursor": max_seq(connection),
-            }
-        )
+        payload = {
+            "server_time": model.format_utc(now),
+            "timezone": family["timezone"],
+            "utc_offset_minutes": model.offset_minutes(zone, now),
+            "offset": offset, "limit": limit, "total": len(rows),
+            "has_more": False if latest else offset + limit < len(rows),
+            "records": [model.record_to_compact(row) for row in page],
+            "reminders": [model.reminder_to_compact(row) for row in
+                          current_reminders(connection, identity.family_id)] if latest or offset == 0 else [],
+            "members": sync_members(connection, identity.family_id),
+            "cursor": max_seq(connection),
+        }
+        if latest:
+            for record in payload["records"]:
+                # The cache keeps 48 UTF-8 bytes. Send one extra complete code
+                # point so its existing parser marks a longer note as truncated.
+                note = record.get("note") or ""
+                prefix = note.encode("utf-8")[:52].decode("utf-8", errors="ignore")
+                record["note"] = prefix
+                # These optional fields do not affect the device cache.
+                record.pop("tz", None)
+                for key in list(record):
+                    if record[key] is None:
+                        del record[key]
+            # An unusually large reminder/member envelope may reduce the recent
+            # window. Full history and full notes remain on the server.
+            payload["window_count"] = len(payload["records"])
+            while payload["records"] and len(json_bytes(payload)) > 15 * 1024:
+                payload["records"].pop(0)
+                payload["offset"] += 1
+                payload["window_count"] = len(payload["records"])
+        return ok(payload)
 
     def _sync_ack(
         self, request: Request, connection: sqlite3.Connection, identity: Optional[auth.Identity]

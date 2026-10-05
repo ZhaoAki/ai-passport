@@ -10,6 +10,7 @@ idf_component_register(
         "lanlan_json.c"
         "lanlan_model.c"
         "lanlan_record.c"
+        "lanlan_reaction.c"
         "lanlan_reminder.c"
         "lanlan_sfx_data.c"
         "lanlan_strings.c"

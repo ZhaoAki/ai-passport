@@ -41,14 +41,15 @@ class IdempotentCreateTest(LanlanTestCase):
         self.assertEqual(1, len(listed))
         self.assertEqual(1, self.server.record_revision_count(listed[0]["id"]))
 
-    def test_changed_body_with_the_same_request_id_still_replays(self) -> None:
+    def test_changed_body_with_the_same_request_id_conflicts(self) -> None:
         client = self.caregiver("hehe")
         body = {"category": "water", "amount_value": 50.0, "amount_unit": "ml",
                 "client_request_id": "retry-0002"}
         first = client.post("/api/v1/records", body)
         body["amount_value"] = 500.0
         second = client.post("/api/v1/records", body)
-        self.assertTrue(second.json()["idempotent_replay"])
+        self.assertEqual(409, second.status)
+        self.assertEqual("idempotency_conflict", second.json()["error"]["code"])
         self.assertEqual(first.json()["record"]["id"], second.json()["record"]["id"])
         self.assertEqual(50.0, second.json()["record"]["amount_value"])
 
@@ -75,7 +76,7 @@ class IdempotentCreateTest(LanlanTestCase):
 
         self.assertEqual(2, len(results))
         statuses = sorted(response.status for response in results)
-        self.assertEqual([200, 200], statuses)
+        self.assertEqual([200, 409], statuses)
         ids = {response.json()["record"]["id"] for response in results}
         self.assertEqual(1, len(ids))
         listed = first.get("/api/v1/records").json()["records"]

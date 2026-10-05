@@ -5,11 +5,10 @@
  *   - an instance is (reminder id, local date);
  *   - a reminder is due only when it is enabled, a time is configured, the
  *     clock is trusted, the local time is at or past the configured time, and
- *     the persisted last-rung instance differs from the current one;
+ *     the current local day is later than the persisted last-rung day;
  *   - the persisted instance survives restarts and refreshes, so the stored
  *     local day never rings twice;
- *   - only one instance is persisted per reminder, so a backwards correction
- *     onto an older, previously rung day may ring once for that day;
+ *   - a backwards clock correction never re-arms an earlier day;
  *   - changing the time on the same day never rings the same instance twice;
  *   - muting or untrusting the clock hides nothing visually but never rings.
  *
